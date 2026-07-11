@@ -1,0 +1,7 @@
+Customer Name,Signup Date,Amount,City,Email,Phone
+  alice smith ,31/01/2024,"₹1,20,000",Bengaluru,A@X.com ,+91 98765 43210
+BOB JONES,2024-02-15,"₹1,200",bengaluru ,bob@y.org,9876543210
+charlie brown,1 Jan 2024,₹1200,Mumbai,not-an-email,(080) 1234-5678
+alice smith,15/03/2024,"₹50,000",MUMBAI,dan@z.co,080 22334455
+Dan Adams,05/06/2024,₹0,Bengaluru,e@w.io,N/A
+Eve Lin,20/07/2024,"₹9,999",Delhi,f@w.io,9000011111

@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cleanframe"
+version = "0.1.0"
+description = "The reproducible data-cleaning engine for Python. AI writes the recipe once; the recipe runs forever — deterministic, diffable, reviewable."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "CleanFrame contributors" }]
+keywords = [
+    "data-cleaning",
+    "pandas",
+    "data-quality",
+    "etl",
+    "reproducible",
+    "schema-drift",
+    "data-validation",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pandas>=1.5",
+    "numpy>=1.23",
+    "PyYAML>=6.0",
+    "Jinja2>=3.0",
+    "python-dateutil>=2.8",
+]
+
+[project.optional-dependencies]
+excel = ["openpyxl>=3.0"]
+llm = ["anthropic>=0.30", "openai>=1.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "openpyxl>=3.0",
+]
+all = ["openpyxl>=3.0", "anthropic>=0.30", "openai>=1.0"]
+
+[project.scripts]
+cleanframe = "cleanframe.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/cleanframe/cleanframe"
+Repository = "https://github.com/cleanframe/cleanframe"
+Documentation = "https://github.com/cleanframe/cleanframe#readme"
+Issues = "https://github.com/cleanframe/cleanframe/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cleanframe"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "error::DeprecationWarning:cleanframe.*",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["E501"]

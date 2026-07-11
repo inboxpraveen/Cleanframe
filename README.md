@@ -46,7 +46,7 @@ No API key needed for this:
 
 ```bash
 pip install cleanframe
-cleanframe report messy_customers.csv
+cleanframe report examples/messy_customers.csv
 ```
 
 You get an HTML report: detected issues, quality score, column-by-column diagnosis. Then fix it:
@@ -55,7 +55,7 @@ You get an HTML report: detected issues, quality score, column-by-column diagnos
 import pandas as pd
 import cleanframe as cf
 
-df = pd.read_csv("messy_customers.csv")
+df = pd.read_csv("examples/messy_customers.csv")
 
 result = cf.clean(
     df,
@@ -81,8 +81,8 @@ If the new file's schema drifted (a renamed column, a new currency format), Clea
 ```
 ⚠ Schema drift detected in new_customers.csv
   • Column "Amt (INR)" is new — 94% match to recipe column "amount_inr"
-  • 312 values in "signup_date" match no allowed format (new: "Jan 5, 26")
-  Run `cleanframe suggest --update customer.recipe.yaml` to review a patch.
+  • 312 values in "signup_date" match no allowed date format (new: "Jan 5, 26")
+  Run `cleanframe suggest new_customers.csv --recipe customer.recipe.yaml --update` to review a patch.
 ```
 
 ## Bring your own API key (or no key at all)
@@ -96,8 +96,14 @@ CleanFrame is LLM-optional and provider-agnostic.
 | **Sample** | LLM sees an anonymized, shuffled sample you approve | Only the approved sample |
 | **Replay** | Saved recipes | Never — recipes need no LLM |
 
-- Keys come from environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...). CleanFrame never stores, logs, or transmits them.
-- Any provider: Anthropic, OpenAI, Google, or a local model via Ollama / any OpenAI-compatible endpoint.
+- Keys come from environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `OPENROUTER_API_KEY`, `GROQ_API_KEY`, …). CleanFrame never stores, logs, or
+  transmits them.
+- Any provider that speaks OpenAI Chat Completions works out of the box —
+  Anthropic (native), OpenAI, OpenRouter, Groq, Together, Fireworks, DeepSeek,
+  Mistral, Google Gemini, xAI, Perplexity, Cohere, plus local Ollama / LM Studio
+  or any custom `OPENAI_BASE_URL`. Spec format: `provider/model`
+  (e.g. `openrouter/anthropic/claude-sonnet-4`, `groq/llama-3.3-70b-versatile`).
 - Hard cost cap: `cf.clean(..., max_tokens_budget=50_000)` aborts planning before it gets expensive.
 - Fully offline / air-gapped operation is a supported first-class mode, not a degraded one.
 
@@ -135,6 +141,9 @@ columns:
   "City":
     rename_to: city
     normalize_values: {Bengaluru: Bangalore, BLR: Bangalore, Bombay: Mumbai}
+  "Email":
+    rename_to: email
+    ops: [strip_whitespace, normalize_email]
 validate:
   - {column: email, check: valid_email, on_fail: quarantine}
   - {column: amount_inr, check: ">= 0", on_fail: quarantine}
