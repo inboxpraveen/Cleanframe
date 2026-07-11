@@ -54,8 +54,12 @@ def test_parse_date_coalesces_multiple_formats():
 
 
 def test_strip_and_title_preserve_non_strings():
-    assert col(Op("strip_whitespace"), ["  x ", None, 5]) == ["x", None, 5]
-    assert col(Op("title_case"), ["new  YORK", None]) == ["New York", None]
+    out = col(Op("strip_whitespace"), ["  x ", None, 5])
+    assert out[0] == "x" and out[2] == 5
+    assert pd.isna(out[1])  # None/NaN — pandas 3 str dtype uses nan
+    out = col(Op("title_case"), ["new  YORK", None])
+    assert out[0] == "New York"
+    assert pd.isna(out[1])
 
 
 def test_to_na_default_tokens():
