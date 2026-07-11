@@ -1,0 +1,29 @@
+# Target schema for examples/messy_customers.csv
+# Infer with: cleanframe infer-schema examples/messy_customers.csv -o examples/customer.schema.yaml
+name: customer
+columns:
+  customer_name:
+    dtype: string
+    required: true
+    aliases: ["Customer Name", "Cust Name", "name"]
+  signup_date:
+    dtype: date
+    required: true
+    aliases: ["Signup Date", "signup", "joined"]
+    date_formats: ["%d/%m/%Y", "%Y-%m-%d", "%d %b %Y"]
+  amount_inr:
+    dtype: float
+    required: true
+    min: 0
+    aliases: ["Amount", "Amt (INR)", "amount"]
+  city:
+    dtype: category
+    aliases: ["City"]
+    allowed_values: [Bangalore, Mumbai, Delhi]
+  email:
+    dtype: email
+    required: true
+    aliases: ["Email"]
+  phone:
+    dtype: phone
+    aliases: ["Phone", "Mobile"]

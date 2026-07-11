@@ -13,6 +13,7 @@ import re
 
 import pandas as pd
 
+from .._util import sample_non_null
 from ..issues import Issues, _cap_examples
 from ..profile import EMAIL_RE, _name_hint
 from ..types import Op, Severity
@@ -29,7 +30,7 @@ def detect_emails(series: pd.Series, ctx: DetectorContext) -> Issues:
     if cp.semantic_type != "email" and not _name_hint(ctx.column or "", "email"):
         return issues
 
-    values = [v for v in series.dropna().tolist() if isinstance(v, str)]
+    values = [v for v in sample_non_null(series) if isinstance(v, str)]
     if not values:
         return issues
 
@@ -66,7 +67,7 @@ def detect_phones(series: pd.Series, ctx: DetectorContext) -> Issues:
     if cp.semantic_type != "phone" and not _name_hint(ctx.column or "", "phone"):
         return issues
 
-    values = [v if isinstance(v, str) else str(v) for v in series.dropna().tolist()]
+    values = [v if isinstance(v, str) else str(v) for v in sample_non_null(series)]
     if not values:
         return issues
 

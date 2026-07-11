@@ -18,7 +18,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from ._util import write_text
 from .codegen import generate_code
+from .dataio import write_frame
 from .diff import CellDiff
 from .drift import DriftReport
 from .issues import Issues
@@ -43,9 +45,7 @@ class CodeArtifact:
         return self._cached
 
     def save(self, path: str | Path) -> Path:
-        path = Path(path)
-        path.write_text(self.to_string(), encoding="utf-8")
-        return path
+        return write_text(path, self.to_string())
 
     def __str__(self) -> str:
         return self.to_string()
@@ -59,9 +59,7 @@ class Report:
         self.quality = quality
 
     def save(self, path: str | Path) -> Path:
-        path = Path(path)
-        path.write_text(self.html, encoding="utf-8")
-        return path
+        return write_text(path, self.html)
 
     def _repr_html_(self) -> str:  # pragma: no cover - Jupyter hook
         return self.html
@@ -125,13 +123,14 @@ class CleanResult:
             "report": self.report().save(prefix.with_suffix(".report.html")),
         }
         if self.has_quarantine:
-            paths["quarantine"] = _save_csv(self.quarantine, prefix.with_suffix(".quarantine.csv"))
+            paths["quarantine"] = write_frame(
+                self.quarantine, prefix.with_suffix(".quarantine.csv")
+            )
         return paths
 
 
 def _save_csv(df: pd.DataFrame, path: Path) -> Path:
-    df.to_csv(path, index=False)
-    return path
+    return write_frame(df, path)
 
 
 def build_profile_report_object(

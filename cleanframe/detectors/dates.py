@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .._util import sample_non_null
 from ..issues import Issues, _cap_examples
 from ..profile import COMMON_DATE_FORMATS, _looks_date
 from ..types import Op, Severity
@@ -64,7 +65,7 @@ def detect_dates(series: pd.Series, ctx: DetectorContext) -> Issues:
     if pd.api.types.is_datetime64_any_dtype(series.dtype):
         return issues
 
-    values = [v if isinstance(v, str) else str(v) for v in series.dropna().tolist()]
+    values = [v if isinstance(v, str) else str(v) for v in sample_non_null(series)]
     dayfirst_opt = ctx.option("dayfirst")
     formats, unparsed = _infer_formats(values, dayfirst_opt)
     if not formats:

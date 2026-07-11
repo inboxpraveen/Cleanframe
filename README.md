@@ -14,10 +14,12 @@
 </p>
 
 <p align="center">
-  <a href="#"><img src="https://img.shields.io/pypi/v/cleanframe" alt="PyPI"/></a>
-  <a href="#"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"/></a>
+  <a href="https://pypi.org/project/cleanframe/"><img src="https://img.shields.io/pypi/v/cleanframe" alt="PyPI"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"/></a>
+  <a href="https://github.com/inboxpraveen/Cleanframe/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/inboxpraveen/Cleanframe/ci.yml?branch=main" alt="CI"/></a>
   <a href="#"><img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python"/></a>
   <a href="#"><img src="https://img.shields.io/badge/LLM-optional-success" alt="LLM optional"/></a>
+  <a href="https://github.com/inboxpraveen/Cleanframe/wiki"><img src="https://img.shields.io/badge/docs-wiki-informational" alt="Wiki"/></a>
 </p>
 
 ---
@@ -31,6 +33,16 @@ You clean it by hand. Next month, it arrives broken in a new way, and you clean 
 ```
 AI suggests.  Pandas executes.  Rules validate.  You approve.  Everything is reproducible.
 ```
+
+## Documentation
+
+| | |
+|--|--|
+| **[Wiki (full docs)](https://github.com/inboxpraveen/Cleanframe/wiki)** | Getting started, API, recipe/schema specs, production guide |
+| **[docs/](docs/)** | Same guides in-repo |
+| **[CONTRIBUTING.md](CONTRIBUTING.md)** | Invariants + how to add detectors/ops |
+| **[SECURITY.md](SECURITY.md)** | Vulnerability reporting |
+| **[CHANGELOG.md](CHANGELOG.md)** | Release notes |
 
 ## Why not just use an LLM agent on my dataframe?
 
@@ -59,9 +71,9 @@ df = pd.read_csv("examples/messy_customers.csv")
 
 result = cf.clean(
     df,
-    target_schema="schemas/customer.yaml",   # or infer one: cf.infer_schema(df)
-    llm="anthropic/claude-sonnet-4-6",        # optional — omit for rules-only mode
-    mode="review",                            # review | auto | strict
+    target_schema="examples/customer.schema.yaml",  # or: cf.infer_schema(df)
+    llm="anthropic/claude-sonnet-4-6",              # optional — omit for rules-only
+    mode="review",                                  # review | auto | strict
 )
 
 result.diff.show()                # cell-level before/after, git-diff style
@@ -122,6 +134,19 @@ CleanFrame is LLM-optional and provider-agnostic.
 | Schema mapping | messy file → your target schema, with confidence scores |
 | Outliers | flagged with evidence — **detected, never auto-"fixed"** |
 
+## Production-ready defaults
+
+CleanFrame is built for pipelines, not just demos:
+
+- **Plan once, replay forever** — commit recipes; fail on schema drift
+- **Bounded memory** — detector sampling (50k values) + capped cell-diff detail (100k)
+- **Safe CSV exports** — spreadsheet formula injection escaped by default
+- **Regex guards** — oversized / nested-quantifier patterns rejected
+- **Visible degradation** — missing columns and LLM fallbacks warn instead of failing silently
+- **Quarantine, don't delete** — validation failures are held with reasons
+
+See the [Production Guide](https://github.com/inboxpraveen/Cleanframe/wiki/Production-Guide).
+
 ## The recipe: your durable artifact
 
 ```yaml
@@ -149,7 +174,12 @@ validate:
   - {column: amount_inr, check: ">= 0", on_fail: quarantine}
 ```
 
-Recipes are reviewed in PRs like code, replayed in CI/Airflow/dbt, and exported to [pandera](https://pandera.readthedocs.io) schemas or Great Expectations suites — CleanFrame plays *with* your validation stack, not against it.
+A worked example ships in [`examples/`](examples/) (`messy_customers.csv`,
+`customer.schema.yaml`, `customer.recipe.yaml`).
+
+Recipes are reviewed in PRs like code, replayed in CI/Airflow/dbt, and exported as
+plain pandas via `result.code` — CleanFrame plays *with* your validation stack,
+not against it.
 
 ## How it compares
 
@@ -188,11 +218,24 @@ Detectors are plugins — write your own in ~30 lines:
 def detect_iban(series: pd.Series) -> cf.Issues: ...
 ```
 
+## Install
+
+```bash
+pip install cleanframe
+pip install "cleanframe[excel]"      # Excel
+pip install "cleanframe[parquet]"    # Parquet
+pip install "cleanframe[llm]"        # Anthropic + OpenAI SDKs
+pip install "cleanframe[all]"
+```
+
+Python 3.10+.
+
 ## Roadmap
 
 - [x] Profiler, core detectors (dates, currency, categories, dedup, nulls, schema mapping)
 - [x] Recipe format v1 + replay + drift detection
 - [x] HTML reports, cell-level diff
+- [x] Production safety guards (sampling, CSV sanitisation, regex limits, diff caps)
 - [ ] `MessyData-100` public benchmark + leaderboard
 - [ ] pandera / GX / dbt exporters
 - [ ] Polars backend
@@ -204,7 +247,7 @@ The detector plugin system exists so the community owns the long tail of messy-d
 
 ## Sponsoring
 
-CleanFrame is free, Apache-2.0, and will stay that way for individuals — no feature is paywalled for a person with a laptop and a messy CSV. If it saves your team recurring hours, [sponsorship](https://github.com/sponsors/) funds detector coverage, the benchmark, and long-term maintenance.
+CleanFrame is free, Apache-2.0, and will stay that way for individuals — no feature is paywalled for a person with a laptop and a messy CSV. If it saves your team recurring hours, [sponsorship](https://github.com/sponsors/inboxpraveen) funds detector coverage, the benchmark, and long-term maintenance.
 
 ---
 

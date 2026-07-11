@@ -24,17 +24,22 @@ from __future__ import annotations
 import json
 import os
 import re
+import warnings
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import pandas as pd
 
+from ._util import DETECTOR_SAMPLE_CAP, sample_non_null
 from .errors import BudgetExceeded, LLMError
 from .issues import Issues
 from .ops import list_ops
 from .profile import DataFrameProfile
 from .recipe import Recipe
 from .types import LLMExposure, Mode
+
+#: Default HTTP timeout (seconds) for LLM provider calls.
+LLM_HTTP_TIMEOUT = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +78,7 @@ class AnthropicClient:
             import anthropic
         except ImportError as exc:  # pragma: no cover - optional dep
             raise LLMError("The 'anthropic' package is required. Install cleanframe[llm].") from exc
-        client = anthropic.Anthropic(api_key=self._api_key)
+        client = anthropic.Anthropic(api_key=self._api_key, timeout=LLM_HTTP_TIMEOUT)
         msg = client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
@@ -118,7 +123,7 @@ class OpenAIClient:
             import openai
         except ImportError as exc:  # pragma: no cover - optional dep
             raise LLMError("The 'openai' package is required. Install cleanframe[llm].") from exc
-        kwargs: dict[str, Any] = {"api_key": self._api_key}
+        kwargs: dict[str, Any] = {"api_key": self._api_key, "timeout": LLM_HTTP_TIMEOUT}
         if self._base_url:
             kwargs["base_url"] = self._base_url
         if self._default_headers:
@@ -167,10 +172,10 @@ _PROVIDER_LIST: list[ProviderSpec] = [
         base_url="https://openrouter.ai/api/v1",
         key_env="OPENROUTER_API_KEY",
         # OpenRouter optionally uses these for rankings; harmless if unset.
-        default_headers={
-            "HTTP-Referer": "https://github.com/cleanframe/cleanframe",
-            "X-Title": "CleanFrame",
-        },
+                        default_headers={
+                            "HTTP-Referer": "https://github.com/inboxpraveen/Cleanframe",
+                            "X-Title": "CleanFrame",
+                        },
     ),
     ProviderSpec(
         "groq",
@@ -366,7 +371,8 @@ def _anonymize_value(value: Any, semantic_type: str) -> str:
 
 def _sample_for_llm(cp: Any, series: pd.Series, *, k: int = 5) -> list[str]:
     """Deterministically shuffled, anonymized sample values for SAMPLE exposure."""
-    values = [v for v in series.dropna().tolist()]
+    # Cap materialisation so SAMPLE mode cannot load a multi-million-row column.
+    values = sample_non_null(series, cap=min(DETECTOR_SAMPLE_CAP, 10_000))
     # Stable shuffle keyed by column name — same input → same sample order.
     seed = sum(ord(c) for c in cp.name) % 2_147_483_647 or 1
     rng = __import__("random").Random(seed)
@@ -533,6 +539,11 @@ class LLMPlanner:
         except (LLMError, BudgetExceeded) as exc:
             if self.fallback is None:
                 raise
+            warnings.warn(
+                f"CleanFrame: LLM planning failed ({exc}); falling back to rules planner. "
+                "Inspect recipe.meta['llm_fallback'] for details.",
+                stacklevel=2,
+            )
             recipe = self._fallback().plan(
                 df, profile, issues, schema=schema, mode=mode, options=options
             )

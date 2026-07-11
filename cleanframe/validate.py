@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from ._util import safe_compile_regex
 from .errors import RecipeError, ValidationFailure
 from .profile import EMAIL_RE, URL_RE
 from .recipe import ValidationRule
@@ -128,7 +129,10 @@ def _membership_mask(series: pd.Series, values: list[Any]) -> pd.Series:
 
 
 def _regex_mask(series: pd.Series, pattern: str) -> pd.Series:
-    compiled = re.compile(pattern)
+    try:
+        compiled = safe_compile_regex(pattern)
+    except ValueError as exc:
+        raise RecipeError(str(exc)) from exc
     return series.isna() | series.map(lambda v: bool(compiled.search(str(v))))
 
 

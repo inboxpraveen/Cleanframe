@@ -10,10 +10,12 @@ quarantine.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import pandas as pd
 
+from ._util import DEFAULT_MAX_DIFF_CHANGES
 from .diff import CellDiff, compute_diff
 from .errors import ExecutionError
 from .ops import apply_column_op, apply_frame_op
@@ -38,8 +40,21 @@ class ExecutionResult:
         return not self.quarantine.empty
 
 
-def execute(recipe: Recipe, df: pd.DataFrame, *, mode: Mode | str = Mode.REVIEW) -> ExecutionResult:
-    """Apply ``recipe`` to ``df`` and return the cleaned frame plus full lineage."""
+def execute(
+    recipe: Recipe,
+    df: pd.DataFrame,
+    *,
+    mode: Mode | str = Mode.REVIEW,
+    max_diff_changes: int | None = DEFAULT_MAX_DIFF_CHANGES,
+) -> ExecutionResult:
+    """Apply ``recipe`` to ``df`` and return the cleaned frame plus full lineage.
+
+    Parameters
+    ----------
+    max_diff_changes:
+        Cap on stored cell-level diff entries (default 100_000). Pass ``None`` to
+        store every change. Counts remain exact when truncated.
+    """
     mode = Mode.coerce(mode)
     # Stable positional row id (survives renames and row drops for the diff).
     work = df.reset_index(drop=True)
@@ -58,6 +73,11 @@ def execute(recipe: Recipe, df: pd.DataFrame, *, mode: Mode | str = Mode.REVIEW)
             if mode is Mode.STRICT:
                 raise ExecutionError(msg + " (strict mode)")
             log.append("skipped: " + msg)
+            warnings.warn(
+                f"CleanFrame: skipped recipe column {src!r} — not present in the data. "
+                "Use mode='strict' to fail instead, or re-plan / suggest_update for drift.",
+                stacklevel=2,
+            )
             continue
 
         series = work[src]
@@ -116,7 +136,15 @@ def execute(recipe: Recipe, df: pd.DataFrame, *, mode: Mode | str = Mode.REVIEW)
         source_of,
         dropped_rows=dropped_rows,
         n_rows_before=int(len(original)),
+        max_changes=max_diff_changes,
     )
+    if diff.truncated:
+        msg = (
+            f"diff detail truncated to {len(diff.changes)} of {diff.changed_cells} "
+            "changed cells (raise max_diff_changes or pass None for a full lineage)"
+        )
+        log.append(msg)
+        warnings.warn("CleanFrame: " + msg, stacklevel=2)
 
     return ExecutionResult(
         dataframe=work,

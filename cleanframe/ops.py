@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ._util import safe_compile_regex
 from .errors import OpError, RecipeError
 from .types import Op
 
@@ -287,7 +288,10 @@ def _coerce_replace(raw: Any) -> dict:
 def replace(series: pd.Series, pattern: str, repl: str = "", regex: bool = True) -> pd.Series:
     """Regex (or literal) substitution over string cells."""
     if regex:
-        compiled = re.compile(pattern)
+        try:
+            compiled = safe_compile_regex(pattern)
+        except ValueError as exc:
+            raise OpError(str(exc)) from exc
         return _apply_str(series, lambda s: compiled.sub(repl, s))
     return _apply_str(series, lambda s: s.replace(pattern, repl))
 

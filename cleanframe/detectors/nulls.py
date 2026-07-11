@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .._util import sample_non_null
 from ..issues import Issues
 from ..ops import DEFAULT_NA_TOKENS
 from ..types import Op, Severity
@@ -33,7 +34,7 @@ def detect_nulls(series: pd.Series, ctx: DetectorContext) -> Issues:
     # 1) Disguised nulls in string columns -> fixable.
     if series.dtype == object or str(series.dtype) == "string":
         disguised: dict[str, int] = {}
-        for v in series.dropna().tolist():
+        for v in sample_non_null(series):
             if isinstance(v, str) and v.strip().casefold() in _NA_LOOKUP:
                 disguised[v] = disguised.get(v, 0) + 1
         total_disguised = sum(disguised.values())

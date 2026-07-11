@@ -82,7 +82,9 @@ def _cmd_clean(args: argparse.Namespace) -> int:
         result.report(args.report)
         print(f"✓ Report   → {args.report}")
     if result.has_quarantine and args.quarantine:
-        result.quarantine.to_csv(args.quarantine, index=False)
+        from .dataio import write_frame
+
+        write_frame(result.quarantine, args.quarantine)
         print(f"✓ Quarantine → {args.quarantine}  ({len(result.quarantine)} rows)")
 
     print()

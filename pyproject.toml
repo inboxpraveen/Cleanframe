@@ -42,22 +42,25 @@ dependencies = [
 
 [project.optional-dependencies]
 excel = ["openpyxl>=3.0"]
+parquet = ["pyarrow>=12.0"]
 llm = ["anthropic>=0.30", "openai>=1.0"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "openpyxl>=3.0",
+    "ruff>=0.4",
 ]
-all = ["openpyxl>=3.0", "anthropic>=0.30", "openai>=1.0"]
+all = ["openpyxl>=3.0", "pyarrow>=12.0", "anthropic>=0.30", "openai>=1.0"]
 
 [project.scripts]
 cleanframe = "cleanframe.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/cleanframe/cleanframe"
-Repository = "https://github.com/cleanframe/cleanframe"
-Documentation = "https://github.com/cleanframe/cleanframe#readme"
-Issues = "https://github.com/cleanframe/cleanframe/issues"
+Homepage = "https://github.com/inboxpraveen/Cleanframe"
+Repository = "https://github.com/inboxpraveen/Cleanframe"
+Documentation = "https://github.com/inboxpraveen/Cleanframe/wiki"
+Issues = "https://github.com/inboxpraveen/Cleanframe/issues"
+Changelog = "https://github.com/inboxpraveen/Cleanframe/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cleanframe"]
@@ -75,4 +78,4 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
-ignore = ["E501"]
+ignore = ["E501", "UP038"]  # UP038: isinstance(x, list | tuple) vs (list, tuple) — keep tuple form

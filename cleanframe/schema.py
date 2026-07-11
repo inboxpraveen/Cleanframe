@@ -19,7 +19,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from ._util import snake_case
+from ._util import read_text, snake_case, write_text
 from .errors import SchemaError
 from .profile import COMMON_DATE_FORMATS, _name_hint, profile_dataframe
 
@@ -128,9 +128,7 @@ class Schema:
         )
 
     def save(self, path: str | Path) -> Path:
-        path = Path(path)
-        path.write_text(self.to_yaml(), encoding="utf-8")
-        return path
+        return write_text(path, self.to_yaml())
 
     @classmethod
     def from_dict(cls, raw: dict) -> Schema:
@@ -147,7 +145,7 @@ class Schema:
         path = Path(path)
         if not path.exists():
             raise SchemaError(f"Schema not found: {path}")
-        return cls.from_dict(yaml.safe_load(path.read_text(encoding="utf-8")))
+        return cls.from_dict(yaml.safe_load(read_text(path)))
 
 
 def _infer_date_formats(series: pd.Series) -> list[str]:

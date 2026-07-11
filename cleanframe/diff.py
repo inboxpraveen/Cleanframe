@@ -18,6 +18,7 @@ from typing import Any
 
 import pandas as pd
 
+from ._util import DEFAULT_MAX_DIFF_CHANGES
 from .ops import _is_na
 
 
@@ -70,11 +71,15 @@ class CellDiff:
     dropped_rows: list[tuple[int, str]] = field(default_factory=list)  # (row_id, reason)
     n_rows_before: int = 0
     n_rows_after: int = 0
+    #: True when ``max_changes`` stopped recording further cell edits (summary still exact).
+    truncated: bool = False
+    #: Total cells that changed, including those not stored when truncated.
+    total_changed_cells: int = 0
 
     # -- summaries -------------------------------------------------------
     @property
     def changed_cells(self) -> int:
-        return len(self.changes)
+        return self.total_changed_cells or len(self.changes)
 
     @property
     def changed_columns(self) -> list[str]:
@@ -107,6 +112,8 @@ class CellDiff:
             "rows_dropped": len(self.dropped_rows),
             "rows_before": self.n_rows_before,
             "rows_after": self.n_rows_after,
+            "truncated": self.truncated,
+            "stored_changes": len(self.changes),
         }
 
     def is_empty(self) -> bool:
@@ -142,6 +149,7 @@ def compute_diff(
     *,
     dropped_rows: list[tuple[int, str]] | None = None,
     n_rows_before: int | None = None,
+    max_changes: int | None = DEFAULT_MAX_DIFF_CHANGES,
 ) -> CellDiff:
     """Compute a :class:`CellDiff`.
 
@@ -156,6 +164,10 @@ def compute_diff(
         derived/added (no "before" value).
     dropped_rows:
         ``(row_id, reason)`` pairs for rows removed during execution.
+    max_changes:
+        Cap on stored :class:`CellChange` entries. ``None`` stores every change
+        (can OOM on large dirty frames). Counts in :attr:`CellDiff.changed_cells`
+        remain exact even when the detail list is truncated.
     """
     diff = CellDiff(
         dropped_rows=list(dropped_rows or []),
@@ -165,6 +177,8 @@ def compute_diff(
 
     source_cols = set(original.columns.astype(str))
     used_sources: set[str] = set()
+    total = 0
+    store_cap = max_changes  # None = unlimited
 
     for out_col in cleaned.columns:
         out_col = str(out_col)
@@ -177,9 +191,19 @@ def compute_diff(
             diff.renamed_columns[source] = out_col
 
         after_series = cleaned[out_col]
-        before_series = original[source].reindex(after_series.index)  # align by row id
+        before_series = original[source].reindex(after_series.index)
         changed_mask = _changed_mask(before_series, after_series)
-        for row_id in after_series.index[changed_mask.to_numpy()]:
+        changed_ids = after_series.index[changed_mask.to_numpy()]
+        total += int(len(changed_ids))
+
+        if store_cap is not None and len(diff.changes) >= store_cap:
+            diff.truncated = True
+            continue
+
+        for row_id in changed_ids:
+            if store_cap is not None and len(diff.changes) >= store_cap:
+                diff.truncated = True
+                break
             diff.changes.append(
                 CellChange(
                     int(row_id),
@@ -194,6 +218,7 @@ def compute_diff(
         if src not in used_sources:
             diff.removed_columns.append(src)
 
+    diff.total_changed_cells = total
     return diff
 
 
@@ -230,6 +255,11 @@ def _render_text(diff: CellDiff, *, max_per_column: int, color: bool | None) -> 
         f"{s['changed_cells']} cell(s) changed in {s['changed_columns']} column(s), "
         f"{s['rows_dropped']} row(s) dropped "
         f"({s['rows_before']} → {s['rows_after']} rows)"
+        + (
+            f"  {dim}[detail truncated to {s['stored_changes']}]{reset}"
+            if s.get("truncated")
+            else ""
+        )
     )
     if diff.renamed_columns:
         renames = ", ".join(f"{k} → {v}" for k, v in diff.renamed_columns.items())

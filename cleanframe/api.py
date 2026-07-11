@@ -132,7 +132,10 @@ def clean(
     the_planner = _resolve_planner(planner, llm, llm_exposure, max_tokens_budget)
     recipe = the_planner.plan(df, profile, issues, schema=schema_obj, mode=mode, options=options)
 
-    exec_result = execute(recipe, df, mode=mode)
+    from ._util import DEFAULT_MAX_DIFF_CHANGES
+
+    max_diff = options.get("max_diff_changes", DEFAULT_MAX_DIFF_CHANGES)
+    exec_result = execute(recipe, df, mode=mode, max_diff_changes=max_diff)
     quality = quality_score(profile, issues)
 
     return CleanResult(
@@ -246,6 +249,7 @@ def suggest_update(
 
 
 def _patch_recipe_for_drift(recipe: Recipe, report: DriftReport, df: pd.DataFrame) -> Recipe:
+    from ._util import sample_non_null
     from .detectors.dates import _infer_formats
     from .fingerprint import fingerprint_dataframe
 
@@ -274,7 +278,7 @@ def _patch_recipe_for_drift(recipe: Recipe, report: DriftReport, df: pd.DataFram
                 continue
             existing = list(op.params.get("formats") or [])
             new_formats, _ = _infer_formats(
-                [str(v) for v in df[src].dropna().tolist()], op.params.get("dayfirst")
+                [str(v) for v in sample_non_null(df[src])], op.params.get("dayfirst")
             )
             added = [f for f in new_formats if f not in existing]
             if added:

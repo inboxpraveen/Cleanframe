@@ -13,6 +13,7 @@ import re
 
 import pandas as pd
 
+from .._util import sample_non_null
 from ..issues import Issues, _cap_examples
 from ..profile import _name_hint
 from ..types import Op, Severity
@@ -34,7 +35,7 @@ def detect_whitespace(series: pd.Series, ctx: DetectorContext) -> Issues:
     if cp is None or cp.count == 0 or not _is_string_column(series):
         return issues
 
-    strings = [v for v in series.dropna().tolist() if isinstance(v, str)]
+    strings = [v for v in sample_non_null(series) if isinstance(v, str)]
     trailing = [v for v in strings if v != v.strip()]
     doubles = [v for v in strings if _DOUBLE_WS.search(v)]
     if not trailing and not doubles:
@@ -73,7 +74,7 @@ def detect_text_case(series: pd.Series, ctx: DetectorContext) -> Issues:
     if not _name_hint(ctx.column or "", "date") and not _looks_like_name_column(ctx.column, series):
         return issues
 
-    strings = [v.strip() for v in series.dropna().tolist() if isinstance(v, str)]
+    strings = [v.strip() for v in sample_non_null(series) if isinstance(v, str)]
     if not strings:
         return issues
     inconsistent = [v for v in strings if v != v.title()]

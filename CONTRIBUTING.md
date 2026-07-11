@@ -77,20 +77,23 @@ import inside the function (there are a few examples already).
 
 ---
 
+Demo data lives in `examples/messy_customers.csv` — plus a sample schema and
+recipe (`customer.schema.yaml`, `customer.recipe.yaml`). Full docs:
+[`docs/`](docs/) and the [Wiki](https://github.com/inboxpraveen/Cleanframe/wiki).
+
+---
+
 ## Getting set up
 
 ```bash
-git clone <your fork>
-cd cleanframe
-pip install -e ".[dev]"      # editable install + pytest + openpyxl
-pytest                       # 100+ tests, runs in ~1s
+git clone https://github.com/inboxpraveen/Cleanframe.git
+cd Cleanframe
+pip install -e ".[dev]"      # editable install + pytest + openpyxl + ruff
+pytest                       # full suite, runs in a few seconds
 ```
 
 Windows note: the code and tests handle currency symbols (`₹`, `€`). If your
 console mangles them, run with `PYTHONUTF8=1`. The CLI sets UTF-8 output itself.
-
-Demo data lives in `examples/messy_customers.csv` — the README's 30-second demo
-path.
 
 ---
 

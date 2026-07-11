@@ -6,6 +6,7 @@ from collections import Counter
 
 import pandas as pd
 
+from .._util import sample_non_null
 from ..issues import Issues, _cap_examples
 from ..ops import UNIT_FAMILIES, parse_unit_scalar
 from ..types import Op, Severity
@@ -27,14 +28,15 @@ def detect_units(series: pd.Series, ctx: DetectorContext) -> Issues:
 
     parsed: list[tuple[float, str]] = []
     raw_examples: list[str] = []
-    for v in series.dropna().tolist():
+    sample = sample_non_null(series)
+    for v in sample:
         p = parse_unit_scalar(v)
         if p is None:
             continue
         parsed.append(p)
         raw_examples.append(str(v))
 
-    if len(parsed) < max(2, int(0.5 * cp.count)):
+    if len(parsed) < max(2, int(0.5 * max(len(sample), 1))):
         return issues
 
     families = Counter()

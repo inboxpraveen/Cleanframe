@@ -21,7 +21,7 @@ import re
 
 import pandas as pd
 
-from .._util import normalize_key, similarity
+from .._util import normalize_key, sample_non_null, similarity
 from ..issues import Issues
 from ..types import Op, Severity
 from .base import DetectorContext, detector
@@ -119,7 +119,7 @@ def detect_categories(series: pd.Series, ctx: DetectorContext) -> Issues:
         return issues
 
     counts: dict[str, int] = {}
-    for v in series.dropna().tolist():
+    for v in sample_non_null(series):
         if isinstance(v, str):
             cleaned = _clean(v)
             counts[cleaned] = counts.get(cleaned, 0) + 1

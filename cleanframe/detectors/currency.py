@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .._util import snake_case, token_set
+from .._util import sample_non_null, snake_case, token_set
 from ..issues import Issues, _cap_examples
 from ..ops import _detect_currency_scalar, _parse_number_scalar
 from ..types import Op, Severity
@@ -27,7 +27,7 @@ def detect_currency(series: pd.Series, ctx: DetectorContext) -> Issues:
     if cp is None or cp.count == 0 or cp.semantic_type != "currency":
         return issues
 
-    values = [v if isinstance(v, str) else str(v) for v in series.dropna().tolist()]
+    values = [v if isinstance(v, str) else str(v) for v in sample_non_null(series)]
     codes = {c for c in (_detect_currency_scalar(v, None) for v in values) if isinstance(c, str)}
 
     # How many non-null values fail to become a number? (report, don't hide.)
