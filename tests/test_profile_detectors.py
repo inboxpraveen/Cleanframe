@@ -75,6 +75,22 @@ def test_custom_detector_plugin():
         unregister_detector("shouty")
 
 
+def test_detectors_work_on_pandas_string_dtype():
+    """Pandas 3 defaults text to dtype='str'/'string' — detectors must not require object."""
+    df = pd.DataFrame(
+        {
+            "City": pd.Series(
+                ["Bengaluru", "bengaluru ", "Mumbai", "MUMBAI"], dtype="string"
+            ),
+            "note": pd.Series(["unknown", "ok", "-", "value"], dtype="string"),
+        }
+    )
+    issues = run_detectors(df)
+    assert "category_variants" in kinds(issues, "City")
+    assert "whitespace" in kinds(issues, "City")
+    assert "disguised_nulls" in kinds(issues, "note")
+
+
 def test_disguised_nulls_not_double_counted_after_pandas_na():
     # pandas would read "" as NaN; "unknown" survives and should be caught.
     df = pd.DataFrame({"c": ["unknown", "ok", "-", "value"]})

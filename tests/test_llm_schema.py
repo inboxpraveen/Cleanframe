@@ -7,10 +7,10 @@ import json
 import pandas as pd
 import pytest
 
-from cleanframe.llm import LLMPlanner, LLMResponse, build_metadata, value_sketches
-from cleanframe.profile import profile_dataframe
 from cleanframe.detectors import run_detectors
 from cleanframe.issues import Issues
+from cleanframe.llm import LLMPlanner, LLMResponse, build_metadata, value_sketches
+from cleanframe.profile import profile_dataframe
 from cleanframe.schema import Schema, infer_schema
 from cleanframe.types import LLMExposure
 

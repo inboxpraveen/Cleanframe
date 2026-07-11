@@ -13,7 +13,7 @@ import re
 
 import pandas as pd
 
-from .._util import sample_non_null
+from .._util import is_string_like, sample_non_null
 from ..issues import Issues, _cap_examples
 from ..profile import _name_hint
 from ..types import Op, Severity
@@ -23,16 +23,12 @@ _DOUBLE_WS = re.compile(r"\s{2,}")
 _ALPHAWORDS = re.compile(r"^[A-Za-z][A-Za-z.'\- ]*$")
 
 
-def _is_string_column(series: pd.Series) -> bool:
-    return series.dtype == object or str(series.dtype) == "string"
-
-
 @detector("whitespace", priority=10)
 def detect_whitespace(series: pd.Series, ctx: DetectorContext) -> Issues:
     """Flag leading/trailing or repeated internal whitespace and propose a trim."""
     issues = Issues()
     cp = ctx.column_profile
-    if cp is None or cp.count == 0 or not _is_string_column(series):
+    if cp is None or cp.count == 0 or not is_string_like(series):
         return issues
 
     strings = [v for v in sample_non_null(series) if isinstance(v, str)]

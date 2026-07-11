@@ -65,11 +65,9 @@ def test_to_na_default_tokens():
 
 
 def test_normalize_values_exact_and_case_insensitive():
-    assert col(Op("normalize_values", {"map": {"BLR": "Bangalore"}}), ["BLR", "Mumbai", None]) == [
-        "Bangalore",
-        "Mumbai",
-        None,
-    ]
+    out = col(Op("normalize_values", {"map": {"BLR": "Bangalore"}}), ["BLR", "Mumbai", None])
+    assert out[0] == "Bangalore" and out[1] == "Mumbai"
+    assert pd.isna(out[2])  # None/NaN — pandas 3 str dtype uses nan
     out = col(
         Op("normalize_values", {"map": {"bangalore": "Bangalore"}, "case_insensitive": True}),
         ["BANGALORE", "bangalore"],

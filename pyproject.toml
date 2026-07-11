@@ -78,4 +78,4 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
-ignore = ["E501", "UP038"]  # UP038: isinstance(x, list | tuple) vs (list, tuple) — keep tuple form
+ignore = ["E501", "UP038"]  # UP038 kept for older ruff; newer ruff dropped the rule

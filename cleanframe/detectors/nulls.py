@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .._util import sample_non_null
+from .._util import is_string_like, sample_non_null
 from ..issues import Issues
 from ..ops import DEFAULT_NA_TOKENS
 from ..types import Op, Severity
@@ -32,7 +32,7 @@ def detect_nulls(series: pd.Series, ctx: DetectorContext) -> Issues:
         return issues
 
     # 1) Disguised nulls in string columns -> fixable.
-    if series.dtype == object or str(series.dtype) == "string":
+    if is_string_like(series):
         disguised: dict[str, int] = {}
         for v in sample_non_null(series):
             if isinstance(v, str) and v.strip().casefold() in _NA_LOOKUP:

@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Units detector threshold now compares against the sampled column size, not the full row count
 - Cross-platform IO: UTF-8 (+ BOM-tolerant reads), LF-only text/CSV writes, auto-create parent dirs
 - Quarantine / `save_all` CSV exports go through `write_frame` (same sanitise + encoding path)
+- Pandas 3 compatibility: detectors recognise default ``str`` / ``string`` dtypes (not only ``object``)
 
 ## [0.1.0] — 2026-07-11
 

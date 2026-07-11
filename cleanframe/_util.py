@@ -34,6 +34,25 @@ MAX_REGEX_PATTERN_LENGTH = 500
 _CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 
+def is_string_like(series: pd.Series) -> bool:
+    """True for object / string / str / category columns (pandas 1.x–3.x).
+
+    Pandas 3 defaults inferred text to ``dtype='str'`` (not ``object``). Detectors
+    that only checked ``object`` or ``\"string\"`` silently no-op'd on CI.
+    """
+    dtype = series.dtype
+    if pd.api.types.is_object_dtype(dtype):
+        return True
+    if pd.api.types.is_string_dtype(dtype):
+        return True
+    # Categorical (avoid deprecated is_categorical_dtype).
+    if isinstance(dtype, pd.CategoricalDtype) or str(dtype) == "category":
+        return True
+    # Belt-and-suspenders for unusual StringDtype spellings across versions.
+    name = str(dtype).lower()
+    return name in ("str", "string", "object") or name.startswith("string")
+
+
 def snake_case(name: str) -> str:
     """``"Customer Name"`` / ``"CustomerName"`` / ``"Amt (INR)"`` -> ``customer_name`` / ``amt_inr``."""
     text = _CAMEL_RE.sub("_", str(name))
@@ -146,7 +165,7 @@ def sanitize_dataframe_for_csv(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     for col in out.columns:
         series = out[col]
-        if series.dtype == object or pd.api.types.is_string_dtype(series.dtype):
+        if is_string_like(series):
             out[col] = series.map(sanitize_csv_value)
     return out
 
@@ -192,6 +211,7 @@ __all__ = [
     "ensure_parent",
     "write_text",
     "read_text",
+    "is_string_like",
     "DETECTOR_SAMPLE_CAP",
     "DEFAULT_MAX_DIFF_CHANGES",
     "MAX_REGEX_PATTERN_LENGTH",

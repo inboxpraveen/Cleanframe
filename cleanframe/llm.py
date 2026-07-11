@@ -117,7 +117,11 @@ class OpenAIClient:
         if not self._api_key:
             raise LLMError(
                 f"{self._key_env} is not set"
-                + (f" (or OPENAI_API_KEY as a fallback)." if self._key_env != "OPENAI_API_KEY" else ".")
+                + (
+                    " (or OPENAI_API_KEY as a fallback)."
+                    if self._key_env != "OPENAI_API_KEY"
+                    else "."
+                )
             )
         try:
             import openai

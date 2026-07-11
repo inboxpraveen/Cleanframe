@@ -21,7 +21,7 @@ import re
 
 import pandas as pd
 
-from .._util import normalize_key, sample_non_null, similarity
+from .._util import is_string_like, normalize_key, sample_non_null, similarity
 from ..issues import Issues
 from ..types import Op, Severity
 from .base import DetectorContext, detector
@@ -110,7 +110,7 @@ def detect_categories(series: pd.Series, ctx: DetectorContext) -> Issues:
     cp = ctx.column_profile
     if cp is None or cp.count == 0:
         return issues
-    if series.dtype != object and str(series.dtype) not in ("string", "category"):
+    if not is_string_like(series):
         return issues
     # Only meaningful for low-cardinality columns.
     if cp.unique_count > _MAX_CATEGORY_CARDINALITY or cp.semantic_type in (
