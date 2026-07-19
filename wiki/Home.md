@@ -31,7 +31,7 @@ AI writes the cleaning recipe once. The recipe runs forever — deterministic, d
 - [Changelog](https://github.com/inboxpraveen/Cleanframe/blob/main/CHANGELOG.md)
 - [Examples](https://github.com/inboxpraveen/Cleanframe/tree/main/examples)
 
-`ash
+```bash
 pip install cleanframe
 cleanframe report examples/messy_customers.csv
-`
+```
