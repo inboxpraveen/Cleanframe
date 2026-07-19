@@ -307,9 +307,12 @@ def get_client(spec: str) -> LLMClient:
     if info.kind == "anthropic":
         return AnthropicClient(model)
 
-    # Prefer an explicit env override of the base URL for any OpenAI-compatible
-    # provider (handy for proxies / self-hosted gateways).
-    base_url = os.environ.get("OPENAI_BASE_URL") or info.base_url
+    # OPENAI_BASE_URL may only redirect the openai / openai-compatible / azure
+    # family — never OpenRouter/Groq/etc., where a leaked env would exfiltrate keys.
+    if info.name in ("openai", "openai-compatible", "azure"):
+        base_url = os.environ.get("OPENAI_BASE_URL") or info.base_url
+    else:
+        base_url = info.base_url
     api_key = os.environ.get(info.key_env) or os.environ.get("OPENAI_API_KEY") or info.default_key
     # Google also accepts GEMINI_API_KEY
     if info.name == "google" and not api_key:
@@ -480,7 +483,59 @@ def build_prompt(metadata: dict) -> tuple[str, str]:
     return system, user
 
 
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
+#: Ops the LLM may not emit under stricter modes (rules planner already gates these
+#: via confidence thresholds; the model has no confidence scores to filter on).
+_LLM_BLOCKED_AUTO = frozenset({"fill_na"})
+_LLM_BLOCKED_STRICT = frozenset({"fill_na", "drop_columns"})
+
+
+def _extract_json_object(text: str) -> str:
+    """Return the first top-level ``{...}`` object using a brace-depth scan.
+
+    A greedy ``\\{.*\\}`` regex can swallow trailing prose or pick the wrong blob
+    when the model wraps JSON in commentary that also contains braces.
+    """
+    start = text.find("{")
+    if start < 0:
+        raise LLMError("LLM response contained no JSON object.")
+    depth = 0
+    in_str = False
+    escape = False
+    for i, ch in enumerate(text[start:], start=start):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise LLMError("LLM response contained no complete JSON object.")
+
+
+def _finalize_llm_recipe(recipe: Recipe, *, mode: Mode) -> Recipe:
+    """Canonicalise op order and strip mode-inappropriate ops from an LLM recipe."""
+    from .planner import _finalize_ops
+
+    blocked = set()
+    if mode is Mode.STRICT:
+        blocked = set(_LLM_BLOCKED_STRICT)
+    elif mode is Mode.AUTO:
+        blocked = set(_LLM_BLOCKED_AUTO)
+
+    for col in recipe.columns:
+        ops = [op for op in col.ops if op.name not in blocked]
+        col.ops = _finalize_ops(ops)
+    recipe.frame_ops = [op for op in recipe.frame_ops if op.name not in blocked]
+    return recipe
 
 
 def parse_recipe_json(text: str) -> Recipe:
@@ -492,12 +547,10 @@ def parse_recipe_json(text: str) -> Recipe:
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")
-        text = text[text.find("{"):] if "{" in text else text
-    match = _JSON_RE.search(text)
-    if not match:
-        raise LLMError("LLM response contained no JSON object.")
+        text = text[text.find("{") :] if "{" in text else text
+    blob = _extract_json_object(text)
     try:
-        data = json.loads(match.group(0))
+        data = json.loads(blob)
     except json.JSONDecodeError as exc:
         raise LLMError(f"LLM returned invalid JSON: {exc}") from exc
     try:
@@ -548,8 +601,9 @@ class LLMPlanner:
     ) -> Recipe:
         from .fingerprint import fingerprint_dataframe
 
+        mode = Mode.coerce(mode)
         try:
-            recipe = self._plan_via_llm(df, profile, issues, schema)
+            recipe = self._plan_via_llm(df, profile, issues, schema, mode=mode)
         except Exception as exc:  # noqa: BLE001
             # The promise is "any failure degrades to deterministic rules so the
             # pipeline never dies because an LLM was flaky" — that must hold for a
@@ -573,12 +627,12 @@ class LLMPlanner:
             recipe.source_fingerprint = fingerprint_dataframe(df)
         recipe.stamp_meta(
             generated_by=f"llm:{self.client.model}",
-            mode=Mode.coerce(mode).value,
+            mode=mode.value,
             llm_exposure=self.exposure.value,
         )
         return recipe
 
-    def _plan_via_llm(self, df, profile, issues, schema) -> Recipe:
+    def _plan_via_llm(self, df, profile, issues, schema, *, mode: Mode) -> Recipe:
         metadata = build_metadata(df, profile, issues, schema, self.exposure)
         system, user = build_prompt(metadata)
         if self.max_tokens_budget is not None:
@@ -593,7 +647,7 @@ class LLMPlanner:
             raise BudgetExceeded(
                 f"Used {response.total_tokens} tokens, over max_tokens_budget={self.max_tokens_budget}."
             )
-        return parse_recipe_json(response.text)
+        return _finalize_llm_recipe(parse_recipe_json(response.text), mode=mode)
 
     def _fallback(self):
         from .planner import RulesPlanner

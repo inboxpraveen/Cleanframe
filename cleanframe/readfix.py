@@ -59,12 +59,20 @@ def _decode(path: Path) -> tuple[str, str]:
     """
     with open(path, "rb") as fh:
         raw = fh.read(_DETECT_BYTES)
+    if b"\x00" in raw:
+        from .errors import CleanFrameError
+
+        raise CleanFrameError(
+            f"{path.name} looks binary (contains NUL bytes). Pass an explicit "
+            "encoding= if this really is text, or convert the file to UTF-8 CSV first."
+        )
     try:
         return raw.decode("utf-8-sig"), "utf-8"
     except UnicodeDecodeError as exc:
         if exc.start >= len(raw) - 4:  # a char split at the chunk boundary, not a bad file
             return raw[: exc.start].decode("utf-8-sig"), "utf-8"
-        # cp1252 maps every byte, so this cannot fail — a safe, deterministic fallback.
+        # cp1252 maps every byte, so this cannot fail — a safe, deterministic fallback
+        # for Windows/Excel CSV exports that are not valid UTF-8.
         return raw.decode("cp1252"), "cp1252"
 
 

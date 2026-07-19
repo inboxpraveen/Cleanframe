@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from ._util import best_match, similarity
+from ._util import best_match, canonicalize_dtype, similarity
+from .fingerprint import DEFAULT_SAMPLE_ROWS, fingerprint_dataframe
 from .llm import _sketch
 from .ops import parse_dates_to_datetime
 from .recipe import Recipe
@@ -103,8 +104,9 @@ def detect_drift(df: pd.DataFrame, recipe: Recipe, *, source: str | None = None)
                 DriftFinding(
                     kind="new_column",
                     message=f'Column "{col}" is new and unrecognised',
-                    severity=Severity.INFO,
+                    severity=Severity.WARNING,
                     column=col,
+                    suggestion="Confirm the new column is expected, or drop/ignore it before apply.",
                     evidence={},
                 )
             )
@@ -125,26 +127,84 @@ def detect_drift(df: pd.DataFrame, recipe: Recipe, *, source: str | None = None)
             )
         )
 
-    # -- dtype changes -------------------------------------------------
+    # -- dtype changes (canonical families — object vs str is not drift) -
     for col in actual_cols:
-        if col in expected_dtypes and str(df[col].dtype) != expected_dtypes[col]:
-            report.findings.append(
-                DriftFinding(
-                    kind="dtype_change",
-                    message=(
-                        f'Column "{col}" changed dtype '
-                        f'({expected_dtypes[col]} → {df[col].dtype})'
-                    ),
-                    severity=Severity.INFO,
-                    column=col,
-                    evidence={"was": expected_dtypes[col], "now": str(df[col].dtype)},
-                )
+        if col not in expected_dtypes:
+            continue
+        was = expected_dtypes[col]
+        now = str(df[col].dtype)
+        if canonicalize_dtype(was) == canonicalize_dtype(now):
+            continue
+        report.findings.append(
+            DriftFinding(
+                kind="dtype_change",
+                message=f'Column "{col}" changed dtype ({was} → {now})',
+                severity=Severity.WARNING,
+                column=col,
+                suggestion="Re-plan or update casts if ops assume the old dtype.",
+                evidence={"was": was, "now": now},
             )
+        )
+
+    # -- content fingerprint (row_count / hash_sample) ------------------
+    _detect_content_drift(df, fp, report)
 
     # -- value-level format drift (declared parse_date formats) --------
     _detect_format_drift(df, recipe, report)
 
     return report
+
+
+def _detect_content_drift(df: pd.DataFrame, fp: dict, report: DriftReport) -> None:
+    """Compare stored content fingerprint fields when present.
+
+    Row-count and sample-hash changes are expected for monthly files, so they are
+    INFO (visible in the report, do not stop apply). Schema / dtype / format
+    findings remain the apply-blocking signals. Same row count + different hash is
+    called out in the message so operators can spot a possible wrong-file swap.
+    """
+    expected_rows = fp.get("row_count")
+    expected_hash = fp.get("hash_sample")
+    if expected_rows is None and expected_hash is None:
+        return
+
+    sample_rows = int(fp.get("sampled_rows") or DEFAULT_SAMPLE_ROWS)
+    actual_fp = fingerprint_dataframe(df, sample_rows=sample_rows)
+    actual_rows = actual_fp["row_count"]
+    actual_hash = actual_fp["hash_sample"]
+
+    rows_changed = expected_rows is not None and int(expected_rows) != int(actual_rows)
+    hash_changed = expected_hash is not None and str(expected_hash) != str(actual_hash)
+
+    if rows_changed:
+        report.findings.append(
+            DriftFinding(
+                kind="row_count_change",
+                message=f"Row count changed ({expected_rows} → {actual_rows})",
+                severity=Severity.INFO,
+                evidence={"was": int(expected_rows), "now": int(actual_rows)},
+            )
+        )
+
+    if hash_changed:
+        same_n = expected_rows is not None and int(expected_rows) == int(actual_rows)
+        report.findings.append(
+            DriftFinding(
+                kind="content_hash_change",
+                message=(
+                    "Leading-row content hash changed "
+                    f"({expected_hash} → {actual_hash})"
+                ),
+                severity=Severity.INFO,
+                suggestion=(
+                    "Same row count but different sample values — confirm this is "
+                    "the intended file (not a schema-matched swap)."
+                    if same_n
+                    else None
+                ),
+                evidence={"was": str(expected_hash), "now": str(actual_hash)},
+            )
+        )
 
 
 def _detect_format_drift(df: pd.DataFrame, recipe: Recipe, report: DriftReport) -> None:
@@ -161,7 +221,12 @@ def _detect_format_drift(df: pd.DataFrame, recipe: Recipe, report: DriftReport) 
             series = df[src].dropna()
             if series.empty:
                 continue
-            parsed = parse_dates_to_datetime(series, list(formats))
+            parsed = parse_dates_to_datetime(
+                series,
+                list(formats),
+                dayfirst=bool(op.params.get("dayfirst", False)),
+                yearfirst=bool(op.params.get("yearfirst", False)),
+            )
             unmatched = series[parsed.isna()]
             if len(unmatched):
                 examples = [str(v) for v in unmatched.head(3).tolist()]

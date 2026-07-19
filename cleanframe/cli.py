@@ -36,7 +36,10 @@ def _default_out(file: str, suffix: str) -> Path:
 
 
 def _add_selection_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--sheet", help="Excel sheet name or 0-based index to read")
+    parser.add_argument(
+        "--sheet",
+        help="Excel sheet name, or #N for a 0-based index (e.g. --sheet '#0')",
+    )
     parser.add_argument("--columns", help="comma-separated column subset to read")
     parser.add_argument("--nrows", type=int, help="read only the first N rows")
     parser.add_argument("--skiprows", type=int, help="skip the first N rows (after the header)")
@@ -46,8 +49,11 @@ def _selection_kwargs(args: argparse.Namespace) -> dict:
     out: dict = {}
     sheet = getattr(args, "sheet", None)
     if sheet is not None:
-        # Accept a 0-based index or a sheet name.
-        out["sheet"] = int(sheet) if sheet.lstrip("-").isdigit() else sheet
+        # Digits alone are sheet *names* (e.g. "2024"). Use "#0" / "#1" for indices.
+        if sheet.startswith("#") and sheet[1:].lstrip("-").isdigit():
+            out["sheet"] = int(sheet[1:])
+        else:
+            out["sheet"] = sheet
     cols = getattr(args, "columns", None)
     if cols:
         out["columns"] = [c.strip() for c in cols.split(",") if c.strip()]
@@ -109,8 +115,16 @@ def _cmd_clean_workbook(args: argparse.Namespace) -> int:
     result.save_recipe(recipe_out)
     print(f"✓ Workbook recipe → {recipe_out}  ({len(result.sheets)} sheet(s) cleaned)")
     if args.out:
-        overwrite = Path(args.out).resolve() == Path(args.file).resolve()
-        result.save_data(args.out, overwrite=overwrite)
+        same = Path(args.out).resolve() == Path(args.file).resolve()
+        if same and not getattr(args, "overwrite", False):
+            print(
+                "✗ Refusing to overwrite the source workbook in place — formulas and "
+                "formatting are lost on re-emit. Pass --overwrite to accept a data-only "
+                "rewrite, or choose a different --out path.",
+                file=sys.stderr,
+            )
+            return 1
+        result.save_data(args.out, overwrite=bool(getattr(args, "overwrite", False)))
         print(f"✓ Cleaned workbook → {args.out}")
     print()
     print(result.summary())
@@ -180,8 +194,16 @@ def _cmd_apply_workbook(args: argparse.Namespace, recipe) -> int:
         print("\nStopped — re-run with --force to apply anyway.")
         return 1
     out = Path(args.out) if args.out else _default_out(args.file, ".clean.xlsx")
-    overwrite = Path(out).resolve() == Path(args.file).resolve()
-    result.save_data(out, overwrite=overwrite)
+    same = Path(out).resolve() == Path(args.file).resolve()
+    if same and not getattr(args, "overwrite", False):
+        print(
+            "✗ Refusing to overwrite the source workbook in place — formulas and "
+            "formatting are lost on re-emit. Pass --overwrite to accept a data-only "
+            "rewrite, or choose a different --out path.",
+            file=sys.stderr,
+        )
+        return 1
+    result.save_data(out, overwrite=bool(getattr(args, "overwrite", False)))
     print(f"✓ Cleaned workbook → {out}")
     print()
     print(result.summary())
@@ -248,7 +270,17 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         result.report(args.report)
         print(f"✓ Report  → {args.report}")
     if result.has_quarantine:
-        print(f"⚠ {len(result.quarantine)} row(s) quarantined by validation.")
+        q_out = getattr(args, "quarantine", None)
+        if q_out:
+            from .dataio import write_frame
+
+            write_frame(result.quarantine, q_out)
+            print(f"✓ Quarantine → {q_out}  ({len(result.quarantine)} rows)")
+        else:
+            print(
+                f"⚠ {len(result.quarantine)} row(s) quarantined by validation "
+                f"(pass --quarantine FILE to save them)."
+            )
     print()
     result.diff.show()
     return 0
@@ -259,7 +291,14 @@ def _cmd_suggest(args: argparse.Namespace) -> int:
 
     write_to = None
     if args.update:
-        write_to = args.out or args.recipe  # in-place unless --out given
+        if args.out:
+            write_to = args.out
+        elif getattr(args, "in_place", False):
+            write_to = args.recipe
+        else:
+            # Default: write a sibling patched file — never clobber the recipe silently.
+            src = Path(args.recipe)
+            write_to = src.with_name(src.stem + ".patched.yaml")
     patched, drift = suggest_update(args.file, args.recipe, out=write_to)
     print(drift.render())
     if write_to:
@@ -345,6 +384,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--mode", default="review", choices=["review", "auto", "strict"])
     p.add_argument("--no-correct", action="store_true", help="disable read-time format auto-detection")
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="allow writing cleaned data back over the source workbook (loses formulas/formatting)",
+    )
     _add_selection_args(p)
     p.set_defaults(func=_cmd_clean)
 
@@ -361,10 +405,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="apply even when schema drift is detected (default: stop)",
     )
     p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="allow writing cleaned data back over the source workbook (loses formulas/formatting)",
+    )
+    p.add_argument(
         "--chunksize",
         type=int,
         help="stream the CSV in chunks of N rows (out-of-core; row-independent recipes only)",
     )
+    p.add_argument("--quarantine", help="write quarantined rows to this file")
     _add_selection_args(p)
     p.set_defaults(func=_cmd_apply)
 
@@ -372,7 +422,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file")
     p.add_argument("--recipe", required=True, help="recipe YAML to check")
     p.add_argument("--update", action="store_true", help="write a patched recipe")
-    p.add_argument("--out", help="where to write the patched recipe (default: in place)")
+    p.add_argument(
+        "--out",
+        help="where to write the patched recipe (default: <recipe>.patched.yaml)",
+    )
+    p.add_argument(
+        "--in-place",
+        action="store_true",
+        help="with --update, overwrite the recipe file (default writes *.patched.yaml)",
+    )
     p.set_defaults(func=_cmd_suggest)
 
     p = sub.add_parser("infer-schema", help="draft a target schema from a file")

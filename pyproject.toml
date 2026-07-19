@@ -33,7 +33,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "pandas>=1.5",
+    "pandas>=1.5,<4",
     "numpy>=1.23",
     "PyYAML>=6.0",
     "Jinja2>=3.0",

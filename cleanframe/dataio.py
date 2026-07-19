@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ._util import ensure_parent, sanitize_dataframe_for_csv
+from ._util import ensure_parent, sanitize_dataframe_for_csv, sanitize_dataframe_for_spreadsheet
 from .errors import CleanFrameError
 
 #: Encoding for CSV/TSV. ``utf-8-sig`` accepts a BOM and writes plain UTF-8 when
@@ -124,7 +124,13 @@ def read_frame(
             kwargs.setdefault("encoding", "utf-8")
             df = pd.read_json(path, **kwargs)
             if columns is not None:
-                df = df[[c for c in columns if c in df.columns]]
+                missing = [c for c in columns if c not in df.columns]
+                if missing:
+                    raise CleanFrameError(
+                        f"Requested column(s) not found in {path.name}: {missing}. "
+                        f"Available: {list(df.columns)}."
+                    )
+                df = df[list(columns)]
             return _apply_row_slice(df, nrows, skiprows)
         # CSV family (.csv/.txt/.tsv and unknown extensions).
         kwargs.setdefault("encoding", _CSV_READ_ENCODING)
@@ -136,7 +142,15 @@ def read_frame(
             kwargs["nrows"] = nrows
         if skiprows is not None:
             kwargs["skiprows"] = skiprows
-        return pd.read_csv(path, **kwargs)
+        df = pd.read_csv(path, **kwargs)
+        if columns is not None:
+            missing = [c for c in columns if c not in df.columns]
+            if missing:
+                raise CleanFrameError(
+                    f"Requested column(s) not found in {path.name}: {missing}. "
+                    f"Available: {list(df.columns)}."
+                )
+        return df
     except ImportError as exc:  # pragma: no cover - optional engine missing
         hint = "Try `pip install cleanframe[excel]` for Excel support."
         if suffix == ".parquet":
@@ -171,8 +185,8 @@ def write_frame(
     ----------
     sanitize_csv:
         When ``True`` (default), string cells that look like spreadsheet formulas
-        (leading ``=``, ``+``, ``-``, ``@``, …) are escaped before CSV/TSV export.
-        Set ``False`` only when you intentionally need raw formula cells.
+        (leading ``=``, ``+``, ``-``, ``@``, …) are escaped before CSV/TSV/Excel
+        export. Set ``False`` only when you intentionally need raw formula cells.
     """
     path = ensure_parent(path)
     suffix = path.suffix.lower()
@@ -188,8 +202,9 @@ def write_frame(
         kwargs.setdefault("lineterminator", "\n")
         out.to_csv(path, sep="\t", index=False, **kwargs)
     elif suffix in (".xlsx", ".xls", ".xlsm"):
+        out = sanitize_dataframe_for_spreadsheet(df) if sanitize_csv else df
         try:
-            df.to_excel(path, index=False, **kwargs)
+            out.to_excel(path, index=False, **kwargs)
         except ImportError as exc:  # pragma: no cover
             raise CleanFrameError(
                 f"Writing {suffix} requires openpyxl. Try `pip install cleanframe[excel]`."

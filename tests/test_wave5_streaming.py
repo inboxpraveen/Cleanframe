@@ -41,7 +41,9 @@ def test_stream_apply_byte_identical_to_wholeframe(tmp_path):
     ref = execute(recipe, pd.read_csv(p, dtype=str)).dataframe.reset_index(drop=True)
 
     out = tmp_path / "streamed.csv"
-    summary = cf.stream_apply(recipe, p, out, chunksize=4)  # tiny chunks to exercise boundaries
+    summary = cf.stream_apply(
+        recipe, p, out, chunksize=4, check_drift=False
+    )  # tiny chunks; no fingerprint on hand-built recipe
     got = pd.read_csv(out, dtype=str).reset_index(drop=True)
 
     pd.testing.assert_frame_equal(
@@ -101,6 +103,6 @@ def test_stream_quarantine_sidecar(tmp_path):
         {"version": 1, "validate": [{"column": "email", "check": "valid_email", "on_fail": "quarantine"}]}
     )
     out = tmp_path / "clean.csv"
-    summary = cf.stream_apply(recipe, p, out, chunksize=2)
+    summary = cf.stream_apply(recipe, p, out, chunksize=2, check_drift=False)
     assert summary.rows_out == 3 and summary.rows_quarantined == 2
     assert summary.quarantine_path is not None and summary.quarantine_path.exists()

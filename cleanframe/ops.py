@@ -227,6 +227,15 @@ def _apply_str(
     """
     if vec is not None and _is_pure_string(series):
         return vec(series)
+    if pd.api.types.is_object_dtype(series.dtype):
+        # Avoid Series.map(): pandas >= 3 infers StringDtype for pure-string object
+        # columns and rewrites None→nan, which would diverge from the .str fast-path.
+        return pd.Series(
+            [fn(v) if isinstance(v, str) else v for v in series],
+            index=series.index,
+            dtype=object,
+            name=series.name,
+        )
     return series.map(lambda v: fn(v) if isinstance(v, str) else v)
 
 
@@ -384,9 +393,20 @@ def to_na(
     return _apply_str(series, fn)
 
 
+_FILL_NA_STRATEGIES = frozenset(
+    {"mean", "median", "mode", "ffill", "pad", "bfill", "backfill", "zero", "empty"}
+)
+
+
 def _coerce_fill_na(raw: Any) -> dict:
     if isinstance(raw, dict):
-        return {"value": raw.get("value"), "strategy": raw.get("strategy")}
+        strategy = raw.get("strategy")
+        if strategy is not None and str(strategy).lower() not in _FILL_NA_STRATEGIES:
+            raise RecipeError(
+                f"Op 'fill_na' unknown strategy {strategy!r}. "
+                f"Expected one of {sorted(_FILL_NA_STRATEGIES)}."
+            )
+        return {"value": raw.get("value"), "strategy": strategy}
     # bare scalar -> constant fill value
     return {"value": raw, "strategy": None}
 
@@ -649,6 +669,20 @@ def _coerce_parse_date(raw: Any) -> dict:
     }
 
 
+_DAYFIRST_SLASH = frozenset({"%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y"})
+_MONTHFIRST_SLASH = frozenset({"%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y"})
+
+
+def _reconcile_date_formats(formats: list[str], dayfirst: bool) -> list[str]:
+    """Drop the non-preferred d/m vs m/d family so ambiguous cells cannot swap."""
+    has_day = any(f in _DAYFIRST_SLASH for f in formats)
+    has_month = any(f in _MONTHFIRST_SLASH for f in formats)
+    if not (has_day and has_month):
+        return formats
+    drop = _MONTHFIRST_SLASH if dayfirst else _DAYFIRST_SLASH
+    return [f for f in formats if f not in drop]
+
+
 def parse_dates_to_datetime(
     series: pd.Series,
     formats: list[str] | None,
@@ -664,8 +698,10 @@ def parse_dates_to_datetime(
         # (and behaves differently across pandas versions).
         from .profile import COMMON_DATE_FORMATS
 
-        formats = COMMON_DATE_FORMATS
+        formats = list(COMMON_DATE_FORMATS)
         flex_fallback = True
+
+    formats = _reconcile_date_formats(list(formats), dayfirst=bool(dayfirst))
 
     result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
     for fmt in formats:
