@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/Logo.png" alt="CleanFrame logo"/>
+  <img src="docs/assets/Logo.png" alt="CleanFrame logo" width="180" />
 </p>
 
 <h1 align="center">CleanFrame</h1>
