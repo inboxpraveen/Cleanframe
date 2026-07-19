@@ -417,19 +417,22 @@ def build_metadata(
         if exposure == LLMExposure.SAMPLE:
             entry["example_values"] = _sample_for_llm(cp, df[cp.name])
             entry["sample_note"] = (
-                "anonymized + deterministically shuffled; approve before sending off-machine"
+                "PII patterns (emails/phones) and long strings are redacted; short "
+                "category/text values are sent verbatim — approve before sending off-machine"
             )
         columns.append(entry)
 
     payload: dict[str, Any] = {
         "row_count": profile.n_rows,
         "columns": columns,
+        # Only the structured facts of each issue are forwarded — NOT the free-text
+        # message, which can embed a raw cell value (a constant column's value, a
+        # disguised-null token, …). Under METADATA exposure no raw value may leave.
         "detected_issues": [
             {
                 "column": i.column,
                 "kind": i.kind,
                 "severity": i.severity.value,
-                "message": i.message,
             }
             for i in issues
         ],
@@ -497,7 +500,14 @@ def parse_recipe_json(text: str) -> Recipe:
         data = json.loads(match.group(0))
     except json.JSONDecodeError as exc:
         raise LLMError(f"LLM returned invalid JSON: {exc}") from exc
-    return Recipe.from_dict(data)
+    try:
+        return Recipe.from_dict(data)
+    except LLMError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any validation failure => a clean LLMError
+        # Wrap RecipeError and any stray KeyError/TypeError from a malformed model
+        # recipe so the caller only ever sees LLMError (and the planner falls back).
+        raise LLMError(f"LLM produced an invalid recipe: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +550,12 @@ class LLMPlanner:
 
         try:
             recipe = self._plan_via_llm(df, profile, issues, schema)
-        except (LLMError, BudgetExceeded) as exc:
+        except Exception as exc:  # noqa: BLE001
+            # The promise is "any failure degrades to deterministic rules so the
+            # pipeline never dies because an LLM was flaky" — that must hold for a
+            # bad key, over-budget, malformed output, AND a provider/network error,
+            # not just LLMError/BudgetExceeded. (KeyboardInterrupt/SystemExit are
+            # BaseException and correctly propagate.)
             if self.fallback is None:
                 raise
             warnings.warn(

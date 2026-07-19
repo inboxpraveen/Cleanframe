@@ -55,9 +55,11 @@ def execute(
         Cap on stored cell-level diff entries (default 100_000). Pass ``None`` to
         store every change. Counts remain exact when truncated.
     """
+    from ._util import ensure_string_columns
+
     mode = Mode.coerce(mode)
     # Stable positional row id (survives renames and row drops for the diff).
-    work = df.reset_index(drop=True)
+    work = ensure_string_columns(df).reset_index(drop=True)
     original = work.copy()
     log: list[str] = []
     dropped_rows: list[tuple[int, str]] = []
@@ -86,11 +88,26 @@ def execute(
             result = apply_column_op(op, series)
             series = result.series
             for name, extra in result.emit.items():
+                if name in emitted:
+                    raise ExecutionError(
+                        f"Column {src!r} emits {name!r} more than once; rename one target."
+                    )
                 emitted[name] = extra
         work[src] = series
         for name, extra in emitted.items():
+            if name in source_of and source_of[name] is None:
+                # Another op this run already emitted this derived column — two ops
+                # writing the same output name would silently clobber each other
+                # (the rename phase already guards this class of collision).
+                raise ExecutionError(
+                    f"Two ops emit the same derived column {name!r}; rename one target."
+                )
             work[name] = extra.reindex(work.index)
-            source_of[name] = None  # derived column, no "before"
+            if name not in source_of:
+                source_of[name] = None  # brand-new derived column, no "before"
+            # else: `name` is an existing source column being overwritten — keep its
+            # lineage so every clobbered cell is tracked in the diff, and an
+            # idempotent re-emit of identical values registers as no change.
             log.append(f"{src}: emitted derived column {name!r}")
 
     # -- Phase 2: renames -----------------------------------------------
@@ -109,25 +126,39 @@ def execute(
         for src, dst in rename_map.items():
             source_of[dst] = source_of.pop(src, src)
 
+    # Post-transform values of rows that later get dropped, so a value rewrite on a
+    # row that dedup/validation removes is still tracked in the diff (invariant #5).
+    # Only the dropped rows are snapshotted, not the whole frame.
+    dropped_snaps: list[pd.DataFrame] = []
+
     # -- Phase 3: frame ops (dedup, drop_columns, …) --------------------
     for op in recipe.frame_ops:
-        before = set(work.index)
-        work = apply_frame_op(op, work)
-        dropped = before - set(work.index)
-        for rid in sorted(dropped):
-            dropped_rows.append((int(rid), op.name))
+        prev = work
+        work = apply_frame_op(op, prev)
+        dropped = set(prev.index) - set(work.index)
+        if dropped:
+            ids = sorted(dropped)
+            for rid in ids:
+                dropped_rows.append((int(rid), op.name))
+            dropped_snaps.append(prev.loc[ids])
+            log.append(f"{op.name}: dropped {len(dropped)} row(s)")
         # a frame op can also remove columns (drop_columns); keep lineage tidy
         for name in list(source_of):
             if name not in work.columns:
                 source_of.pop(name, None)
-        if dropped:
-            log.append(f"{op.name}: dropped {len(dropped)} row(s)")
 
     # -- Phase 4: validation --------------------------------------------
+    pre_validation = work
     outcome = apply_validations(work, recipe.validations, mode)
     work = outcome.dataframe
+    if outcome.removed_rows:
+        present = [rid for rid, _ in outcome.removed_rows if rid in pre_validation.index]
+        if present:
+            dropped_snaps.append(pre_validation.loc[present])
     dropped_rows.extend(outcome.removed_rows)
     log.extend(outcome.log)
+
+    dropped_after = pd.concat(dropped_snaps) if dropped_snaps else None
 
     # -- Diff -----------------------------------------------------------
     diff = compute_diff(
@@ -135,6 +166,7 @@ def execute(
         work,
         source_of,
         dropped_rows=dropped_rows,
+        dropped_after=dropped_after,
         n_rows_before=int(len(original)),
         max_changes=max_diff_changes,
     )

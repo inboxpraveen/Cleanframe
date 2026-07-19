@@ -34,10 +34,12 @@ from .types import Mode
 # input coercion
 # ---------------------------------------------------------------------------
 def _as_frame(data: pd.DataFrame | str | Path, source: str | None) -> tuple[pd.DataFrame, str | None]:
+    from ._util import ensure_string_columns
+
     if isinstance(data, pd.DataFrame):
-        return data, source
+        return ensure_string_columns(data), source
     if isinstance(data, (str, Path)):
-        return read_frame(data), source or str(data)
+        return ensure_string_columns(read_frame(data)), source or str(data)
     raise CleanFrameError(f"Expected a DataFrame or file path, got {type(data).__name__}.")
 
 
