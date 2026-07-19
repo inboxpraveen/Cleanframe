@@ -139,7 +139,10 @@ CleanFrame is LLM-optional and provider-agnostic.
 CleanFrame is built for pipelines, not just demos:
 
 - **Plan once, replay forever** — commit recipes; fail on schema drift
-- **Bounded memory** — detector sampling (50k values) + capped cell-diff detail (100k)
+- **Multi-sheet workbooks** — clean every Excel tab into one reviewable recipe; write-back refuses to overwrite the source in place
+- **Out-of-core streaming** — replay row-independent recipes over larger-than-RAM CSVs at chunk-bounded memory
+- **Format auto-detection** — encoding (utf-8 → cp1252) and delimiter sniffed at read time, pinned into the recipe for replay
+- **Bounded memory** — detector sampling (50k values) + capped cell-diff detail (100k); the diff snapshots only op-touched columns (peak ≈ input, not 2× the frame)
 - **Safe CSV exports** — spreadsheet formula injection escaped by default
 - **Regex guards** — oversized / nested-quantifier patterns rejected
 - **Visible degradation** — missing columns and LLM fallbacks warn instead of failing silently
@@ -236,6 +239,10 @@ Python 3.10+.
 - [x] Recipe format v1 + replay + drift detection
 - [x] HTML reports, cell-level diff
 - [x] Production safety guards (sampling, CSV sanitisation, regex limits, diff caps)
+- [x] Multi-sheet Excel workbooks (clean every tab, safe write-back)
+- [x] Selective ingestion (sheet / columns / rows)
+- [x] Out-of-core streaming replay (larger-than-RAM CSVs)
+- [x] Read-time format auto-correction (encoding + delimiter)
 - [ ] `MessyData-100` public benchmark + leaderboard
 - [ ] pandera / GX / dbt exporters
 - [ ] Polars backend

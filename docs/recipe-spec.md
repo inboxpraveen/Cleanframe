@@ -1,7 +1,11 @@
-# Recipe specification (format v1)
+# Recipe specification (format v1 / v2)
 
 Recipes are YAML documents with `version: 1`. They are the durable artifact
 CleanFrame is built around.
+
+A recipe stays `version: 1` unless it carries a `read:` section (below), which
+promotes it to `version: 2`; the loader reads both. Workbook recipes are a
+separate `version: 2` shape — see *Workbook recipes* below.
 
 ## Top-level fields
 
@@ -127,6 +131,50 @@ validate:
 
 Stored so `apply_recipe` can detect drift. Includes column names, dtypes, row
 count, and a sample hash. Do not hand-edit unless you know why.
+
+## `read:` section (v2)
+
+Optional top-level block recording how the source slice was read, so
+`apply_recipe` re-reads the same slice. Its presence promotes the recipe to
+`version: 2`.
+
+```yaml
+version: 2
+read:
+  sheet: "Q3"            # Excel sheet name or 0-based index
+  columns: [id, email]   # usecols subset — a filter, not a reorder
+  nrows: 10000
+  skiprows: 2
+  encoding: utf-8        # pinned by read-time format correction
+  sep: ","               # pinned delimiter
+columns:
+  ...
+```
+
+`clean`/`report` record `sheet`/`columns`/`nrows`/`skiprows` (and, from format
+auto-correction, `encoding`/`sep`); `apply_recipe` replays them. Under
+`skiprows`/`nrows` the diff `row_id` is relative to the loaded slice.
+
+## Workbook recipes
+
+A multi-sheet Excel workbook produces a **separate** shape: `version: 2` with a
+top-level `sheets:` mapping (sheet name → a normal recipe). A per-sheet recipe
+never carries its own `read.sheet` — the dict key is the sheet.
+
+```yaml
+version: 2
+sheets:
+  Customers:
+    columns:
+      "Customer Name": {rename_to: customer_name, ops: [strip_whitespace]}
+  Orders:
+    columns:
+      amount: {ops: [parse_number]}
+```
+
+Load with `load_recipe(path)` (auto-detects the `sheets:` block) or
+`WorkbookRecipe.load(path)`. `Recipe.from_dict` rejects a `sheets:` doc and
+points to `WorkbookRecipe`/`load_recipe`.
 
 ## Round-trip contract
 

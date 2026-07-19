@@ -16,6 +16,16 @@ cleanframe report examples/messy_customers.csv
 cleanframe report data.csv --schema examples/customer.schema.yaml -o report.html
 ```
 
+Common flags:
+
+| Flag | Meaning |
+|------|---------|
+| `--sheet NAME\|IDX` | Excel sheet by name or 0-based index |
+| `--columns A,B,C` | Read a subset of columns (filter; keeps file order) |
+| `--nrows N` | Read only the first N rows |
+| `--skiprows N` | Skip N leading rows |
+| `--no-correct` | Disable read-time encoding/delimiter auto-correction |
+
 ## `clean`
 
 Full pipeline: profile → detect → plan → execute → save artifacts.
@@ -36,6 +46,13 @@ Common flags:
 | `--llm provider/model` | Optional LLM planner |
 | `--out-dir DIR` | Write cleaned data, recipe, code, report |
 | `--out PATH` | Cleaned data path only |
+| `--sheet NAME\|IDX` | Excel sheet by name or 0-based index |
+| `--columns A,B,C` | Read a subset of columns (filter; keeps file order) |
+| `--nrows N` | Read only the first N rows |
+| `--skiprows N` | Skip N leading rows |
+| `--no-correct` | Disable read-time encoding/delimiter auto-correction |
+
+A multi-sheet `.xlsx` auto-routes to workbook mode: `cleanframe clean file.xlsx` cleans every sheet; `cleanframe apply file.xlsx --recipe wb.yaml` replays a workbook recipe across sheets.
 
 ## `apply`
 
@@ -52,6 +69,11 @@ cleanframe apply new.csv --recipe customer.recipe.yaml --force   # ignore drift 
 | `--mode` | Execution mode |
 | `--force` | Set `on_drift=ignore` |
 | `--out PATH` | Output path |
+| `--sheet NAME\|IDX` | Excel sheet by name or 0-based index |
+| `--columns A,B,C` | Read a subset of columns (filter; keeps file order) |
+| `--nrows N` | Read only the first N rows |
+| `--skiprows N` | Skip N leading rows |
+| `--chunksize N` | Stream replay in N-row chunks (row-independent recipes only) |
 
 ## `suggest`
 

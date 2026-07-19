@@ -33,13 +33,71 @@ from .types import Mode
 # ---------------------------------------------------------------------------
 # input coercion
 # ---------------------------------------------------------------------------
-def _as_frame(data: pd.DataFrame | str | Path, source: str | None) -> tuple[pd.DataFrame, str | None]:
+def _read_binding(sheet, columns, nrows, skiprows) -> dict[str, Any]:
+    """Collect the non-default read/selection options into a dict (empty if none)."""
+    binding = {"sheet": sheet, "columns": columns, "nrows": nrows, "skiprows": skiprows}
+    return {k: v for k, v in binding.items() if v is not None}
+
+
+def _read_input(
+    data, source, *, sheet, columns, nrows, skiprows, correct_format, warn=False
+) -> tuple[pd.DataFrame, str | None, dict[str, Any], list[str]]:
+    """Read ``data`` with optional CSV format auto-correction.
+
+    Returns ``(df, source, read_binding, notes)`` where ``read_binding`` is the full
+    selection+format binding to record in a recipe's ``read:`` section.
+    """
+    fmt_kwargs: dict[str, Any] = {}
+    notes: list[str] = []
+    eff_skiprows = skiprows
+    if correct_format and isinstance(data, (str, Path)):
+        from .readfix import detect_csv_options, is_csv_family
+
+        if is_csv_family(data):
+            opts, report_ = detect_csv_options(data)  # raises on ambiguous delimiter
+            fmt_kwargs = report_.as_read_binding()  # {encoding?, sep?}
+            notes = report_.notes
+            if "skiprows" in opts and skiprows is None:
+                eff_skiprows = opts["skiprows"]
+            if warn and notes:
+                warnings.warn(
+                    "CleanFrame: read-time format correction — " + "; ".join(notes), stacklevel=3
+                )
+    df, source = _as_frame(
+        data, source, sheet=sheet, columns=columns, nrows=nrows, skiprows=eff_skiprows, **fmt_kwargs
+    )
+    binding = _read_binding(sheet, columns, nrows, eff_skiprows)
+    binding.update(fmt_kwargs)
+    return df, source, binding, notes
+
+
+def _as_frame(
+    data: pd.DataFrame | str | Path,
+    source: str | None,
+    *,
+    sheet=None,
+    columns=None,
+    nrows=None,
+    skiprows=None,
+    **read_kwargs,
+) -> tuple[pd.DataFrame, str | None]:
     from ._util import ensure_string_columns
 
     if isinstance(data, pd.DataFrame):
-        return ensure_string_columns(data), source
+        if sheet is not None or nrows is not None or skiprows is not None:
+            raise CleanFrameError(
+                "sheet=/nrows=/skiprows= selection applies to file inputs only, "
+                "not an in-memory DataFrame. Slice the DataFrame yourself first."
+            )
+        df = data
+        if columns is not None:  # a column projection is well-defined on a DataFrame
+            df = df[[c for c in columns if c in df.columns]]
+        return ensure_string_columns(df), source  # read_kwargs (encoding/sep) are file-only
     if isinstance(data, (str, Path)):
-        return ensure_string_columns(read_frame(data)), source or str(data)
+        df = read_frame(
+            data, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows, **read_kwargs
+        )
+        return ensure_string_columns(df), source or str(data)
     raise CleanFrameError(f"Expected a DataFrame or file path, got {type(data).__name__}.")
 
 
@@ -101,8 +159,23 @@ def clean(
     max_tokens_budget: int | None = None,
     llm_exposure: str = "metadata",
     source: str | None = None,
+    sheet: str | int | None = None,
+    columns: list[str] | None = None,
+    nrows: int | None = None,
+    skiprows: int | list[int] | None = None,
+    correct_format: bool = True,
 ) -> CleanResult:
     """Profile, plan, and clean ``data`` — the main entry point.
+
+    ``sheet``/``columns``/``nrows``/``skiprows`` select part of a file (see
+    :func:`read_frame`); the selection is recorded in the recipe's ``read:`` section
+    so :func:`apply_recipe` re-reads the same slice. For a multi-sheet workbook, pass
+    ``sheet=`` or use :func:`clean_workbook` to clean every sheet.
+
+    ``correct_format`` (default ``True``) auto-detects a CSV-family file's encoding
+    and delimiter at read time (e.g. a ``;``-separated or cp1252 file), warns, and
+    pins the choice into the recipe's ``read:`` section for deterministic replay. An
+    ambiguous delimiter raises rather than guessing.
 
     Parameters
     ----------
@@ -125,7 +198,10 @@ def clean(
     CleanResult
         Cleaned dataframe plus recipe, diff, quarantine, issues, and report.
     """
-    df, source = _as_frame(data, source)
+    df, source, read_binding, read_notes = _read_input(
+        data, source, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows,
+        correct_format=correct_format, warn=True,
+    )
     schema_obj = _resolve_schema(target_schema if target_schema is not None else schema)
     options = dict(options or {})
 
@@ -133,6 +209,10 @@ def clean(
     issues = run_detectors(df, profile=profile, schema=schema_obj, options=options)
     the_planner = _resolve_planner(planner, llm, llm_exposure, max_tokens_budget)
     recipe = the_planner.plan(df, profile, issues, schema=schema_obj, mode=mode, options=options)
+
+    # Record the read/selection + format binding so `apply` re-reads identically.
+    if read_binding:
+        recipe.read = {**(recipe.read or {}), **read_binding}
 
     from ._util import DEFAULT_MAX_DIFF_CHANGES
 
@@ -150,7 +230,7 @@ def clean(
         validation_results=exec_result.validation_results,
         quality=quality,
         source=source,
-        log=exec_result.log,
+        log=[*(f"read-fix: {n}" for n in read_notes), *exec_result.log],
     )
 
 
@@ -163,9 +243,17 @@ def report(
     schema: Any = None,
     options: dict[str, Any] | None = None,
     source: str | None = None,
+    sheet: str | int | None = None,
+    columns: list[str] | None = None,
+    nrows: int | None = None,
+    skiprows: int | list[int] | None = None,
+    correct_format: bool = True,
 ) -> Report:
     """Profile ``data`` and return an HTML :class:`~cleanframe.result.Report` (no changes made)."""
-    df, source = _as_frame(data, source)
+    df, source, _, _ = _read_input(
+        data, source, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows,
+        correct_format=correct_format, warn=True,
+    )
     schema_obj = _resolve_schema(schema)
     profile = profile_dataframe(df)
     issues = run_detectors(df, profile=profile, schema=schema_obj, options=options or {})
@@ -184,6 +272,10 @@ def apply_recipe(
     check_drift: bool = True,
     on_drift: str = "error",
     source: str | None = None,
+    sheet: str | int | None = None,
+    columns: list[str] | None = None,
+    nrows: int | None = None,
+    skiprows: int | list[int] | None = None,
 ) -> CleanResult:
     """Replay a saved recipe on new data — deterministic, no LLM.
 
@@ -191,10 +283,26 @@ def apply_recipe(
     ``"error"`` (default — raise :class:`~cleanframe.errors.DriftError` so nothing
     is silently corrupted), ``"warn"`` (attach the report and warn, then continue),
     or ``"ignore"``. ``strict`` mode always raises on drift.
+
+    The selection used to plan the recipe (its ``read:`` section) is re-applied when
+    ``data`` is a path, unless overridden by an explicit ``sheet``/``columns``/etc.
     """
-    df, source = _as_frame(data, source)
     recipe_obj = _resolve_recipe(recipe)
     mode = Mode.coerce(mode)
+
+    # Precedence: explicit call args > recipe-recorded read binding > whole file.
+    call = _read_binding(sheet, columns, nrows, skiprows)
+    effective = {**(recipe_obj.read or {}), **call}
+    if isinstance(data, pd.DataFrame) and effective:
+        unreplayable = {k for k in effective if k in ("sheet", "nrows", "skiprows")}
+        if unreplayable and not call:
+            warnings.warn(
+                f"CleanFrame: recipe's recorded read binding {sorted(unreplayable)} cannot "
+                "replay against an in-memory DataFrame; ignoring it.",
+                stacklevel=2,
+            )
+            effective = {k: v for k, v in effective.items() if k == "columns"}
+    df, source = _as_frame(data, source, **effective)
 
     drift: DriftReport | None = None
     if check_drift and recipe_obj.source_fingerprint:
@@ -294,9 +402,17 @@ def _patch_recipe_for_drift(recipe: Recipe, report: DriftReport, df: pd.DataFram
 
 
 # re-export
-def infer_schema(df: pd.DataFrame | str | Path, name: str | None = None) -> Schema:
+def infer_schema(
+    df: pd.DataFrame | str | Path,
+    name: str | None = None,
+    *,
+    sheet: str | int | None = None,
+    columns: list[str] | None = None,
+    nrows: int | None = None,
+    skiprows: int | list[int] | None = None,
+) -> Schema:
     """Infer a target :class:`~cleanframe.schema.Schema` from data. See :func:`cleanframe.schema.infer_schema`."""
-    frame, _ = _as_frame(df, None)
+    frame, _ = _as_frame(df, None, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows)
     return _infer_schema(frame, name=name)
 
 

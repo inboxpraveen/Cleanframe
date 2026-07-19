@@ -203,14 +203,30 @@ def _is_na(v: Any) -> bool:
         return False
 
 
-def _apply_str(series: pd.Series, fn: Callable[[str], Any]) -> pd.Series:
+def _is_pure_string(series: pd.Series) -> bool:
+    """True if a vectorised ``.str`` is safe: an object column whose non-null values
+    are *all* ``str``. ``infer_dtype`` scans in C; only then can ``.str`` not silently
+    NaN a stray non-string cell, and object→object keeps the output dtype identical to
+    the elementwise map. (Non-object string dtypes stay on the elementwise path so the
+    result dtype never changes from the historical behaviour.)"""
+    return pd.api.types.is_object_dtype(series.dtype) and pd.api.types.infer_dtype(
+        series, skipna=True
+    ) in ("string", "empty")
+
+
+def _apply_str(
+    series: pd.Series, fn: Callable[[str], Any], vec: Callable[[pd.Series], pd.Series] | None = None
+) -> pd.Series:
     """Apply ``fn`` to string cells only; leave NaN and non-strings untouched.
 
-    Deliberately elementwise rather than ``Series.str.*`` — the vectorised string
-    accessor coerces every non-string cell (including stray ints in an object
-    column) to NaN, which would silently destroy data. Cleaning-sized columns make
-    the elementwise cost a non-issue.
+    The default path is elementwise rather than ``Series.str.*`` — the vectorised
+    string accessor coerces every non-string cell (including stray ints in an object
+    column) to NaN, which would silently destroy data. When a column is provably
+    all-string, the ``vec`` fast-path runs the equivalent ``.str`` chain (byte-identical,
+    verified in tests) for a large speed-up on million-row columns.
     """
+    if vec is not None and _is_pure_string(series):
+        return vec(series)
     return series.map(lambda v: fn(v) if isinstance(v, str) else v)
 
 
@@ -220,7 +236,7 @@ def _apply_str(series: pd.Series, fn: Callable[[str], Any]) -> pd.Series:
 @register_op("strip_whitespace")
 def strip_whitespace(series: pd.Series) -> pd.Series:
     """Trim leading and trailing whitespace from string cells."""
-    return _apply_str(series, str.strip)
+    return _apply_str(series, str.strip, vec=lambda s: s.str.strip())
 
 
 _WS_RE = re.compile(r"\s+")
@@ -229,31 +245,39 @@ _WS_RE = re.compile(r"\s+")
 @register_op("collapse_whitespace")
 def collapse_whitespace(series: pd.Series) -> pd.Series:
     """Collapse internal runs of whitespace to a single space, then trim."""
-    return _apply_str(series, lambda s: _WS_RE.sub(" ", s).strip())
+    return _apply_str(
+        series,
+        lambda s: _WS_RE.sub(" ", s).strip(),
+        vec=lambda s: s.str.replace(r"\s+", " ", regex=True).str.strip(),
+    )
 
 
 @register_op("lowercase")
 def lowercase(series: pd.Series) -> pd.Series:
     """Lowercase string cells."""
-    return _apply_str(series, str.lower)
+    return _apply_str(series, str.lower, vec=lambda s: s.str.lower())
 
 
 @register_op("uppercase")
 def uppercase(series: pd.Series) -> pd.Series:
     """Uppercase string cells."""
-    return _apply_str(series, str.upper)
+    return _apply_str(series, str.upper, vec=lambda s: s.str.upper())
 
 
 @register_op("title_case")
 def title_case(series: pd.Series) -> pd.Series:
     """Title-case string cells (``"new  YORK"`` -> ``"New York"``)."""
-    return _apply_str(series, lambda s: _WS_RE.sub(" ", s).strip().title())
+    return _apply_str(
+        series,
+        lambda s: _WS_RE.sub(" ", s).strip().title(),
+        vec=lambda s: s.str.replace(r"\s+", " ", regex=True).str.strip().str.title(),
+    )
 
 
 @register_op("capitalize")
 def capitalize(series: pd.Series) -> pd.Series:
     """Capitalize the first letter of each string cell."""
-    return _apply_str(series, lambda s: s.strip().capitalize())
+    return _apply_str(series, lambda s: s.strip().capitalize(), vec=lambda s: s.str.strip().str.capitalize())
 
 
 def _coerce_symbols(raw: Any) -> dict:
@@ -413,7 +437,7 @@ def fill_na(series: pd.Series, value: Any = None, strategy: str | None = None) -
 @register_op("normalize_email")
 def normalize_email(series: pd.Series) -> pd.Series:
     """Trim and lowercase email addresses (the case-insensitive, safe normalisation)."""
-    return _apply_str(series, lambda s: s.strip().lower())
+    return _apply_str(series, lambda s: s.strip().lower(), vec=lambda s: s.str.strip().str.lower())
 
 
 def _coerce_normalize_phone(raw: Any) -> dict:

@@ -90,7 +90,9 @@ def detect_duplicates(df: pd.DataFrame, ctx: DetectorContext) -> Issues:
     if len(df) == 0:
         return issues
 
-    exact = int(df.duplicated().sum())
+    # Reuse the profiler's exact-duplicate count instead of hashing the whole frame
+    # a second time (the profiler already computed df.duplicated() for every clean).
+    exact = int(ctx.profile.duplicate_row_count)
     if exact:
         issues.add(
             "duplicate_rows",
@@ -108,7 +110,13 @@ def detect_duplicates(df: pd.DataFrame, ctx: DetectorContext) -> Issues:
         dupe_mask = df[key].dropna().duplicated(keep=False)
         n = int(dupe_mask.sum())
         if n > exact:
-            examples = df.loc[df[key].duplicated(keep=False), key].dropna().unique().tolist()
+            examples = (
+                df.loc[df[key].duplicated(keep=False), key]
+                .dropna()
+                .drop_duplicates()
+                .head(5)
+                .tolist()
+            )
             issues.add(
                 "duplicate_keys",
                 f"Column {key!r} has {n} row(s) sharing a value that should be unique",

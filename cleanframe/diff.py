@@ -177,6 +177,7 @@ def compute_diff(
     *,
     dropped_rows: list[tuple[int, str]] | None = None,
     dropped_after: pd.DataFrame | None = None,
+    original_columns: list[str] | None = None,
     n_rows_before: int | None = None,
     max_changes: int | None = DEFAULT_MAX_DIFF_CHANGES,
 ) -> CellDiff:
@@ -197,6 +198,11 @@ def compute_diff(
         Post-transform values (indexed by row id) of rows that were later dropped,
         so a value rewrite applied to a row before it was removed is still tracked
         as a changed cell (invariant #5) rather than vanishing with the row.
+    original_columns:
+        The full list of input column names. Pass this when ``original`` holds only
+        a *subset* of columns (the executor snapshots just the op-touched ones to
+        halve peak memory); columns absent from ``original`` are treated as
+        value-unchanged pass-throughs. Defaults to ``original.columns``.
     max_changes:
         Cap on stored :class:`CellChange` entries. ``None`` stores every change
         (can OOM on large dirty frames). Counts in :attr:`CellDiff.changed_cells`
@@ -208,7 +214,9 @@ def compute_diff(
         n_rows_after=int(len(cleaned)),
     )
 
-    source_cols = set(original.columns.astype(str))
+    all_columns = [str(c) for c in (original_columns if original_columns is not None else original.columns)]
+    source_cols = set(all_columns)
+    snapshot_cols = set(original.columns.astype(str))
     used_sources: set[str] = set()
     total = 0
     store_cap = max_changes  # None = unlimited
@@ -223,6 +231,11 @@ def compute_diff(
         if source != out_col:
             diff.renamed_columns[source] = out_col
 
+        # A source absent from the (possibly partial) snapshot is a value-unchanged
+        # pass-through: record the rename, but there are no cell edits to diff.
+        if source not in snapshot_cols:
+            continue
+
         after_series = cleaned[out_col]
         if dropped_after is not None and out_col in dropped_after.columns:
             # Append the post-transform values of dropped rows so their edits are
@@ -233,25 +246,25 @@ def compute_diff(
         changed_ids = after_series.index[changed_mask.to_numpy()]
         total += int(len(changed_ids))
 
-        if store_cap is not None and len(diff.changes) >= store_cap:
-            diff.truncated = True
-            continue
-
-        for row_id in changed_ids:
-            if store_cap is not None and len(diff.changes) >= store_cap:
+        # Cap-aware bulk extraction: slice to the remaining budget FIRST, then pull
+        # before/after in one vectorised call each (avoids per-cell .loc — ~44x).
+        if store_cap is not None:
+            remaining = store_cap - len(diff.changes)
+            if remaining <= 0:
+                if len(changed_ids):
+                    diff.truncated = True
+                continue
+            if len(changed_ids) > remaining:
                 diff.truncated = True
-                break
-            diff.changes.append(
-                CellChange(
-                    int(row_id),
-                    out_col,
-                    before_series.loc[row_id],
-                    after_series.loc[row_id],
-                )
-            )
+                changed_ids = changed_ids[:remaining]
+        if len(changed_ids) == 0:
+            continue
+        befores = before_series.loc[changed_ids].tolist()
+        afters = after_series.loc[changed_ids].tolist()
+        for row_id, before, after in zip(changed_ids, befores, afters, strict=False):
+            diff.changes.append(CellChange(int(row_id), out_col, before, after))
 
-    for src in original.columns:
-        src = str(src)
+    for src in all_columns:
         if src not in used_sources:
             diff.removed_columns.append(src)
 
