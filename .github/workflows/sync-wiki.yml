@@ -1,0 +1,62 @@
+name: Sync Wiki
+
+# GitHub Wiki lives in a *separate* git repo (*.wiki.git). This job copies
+# wiki/*.md from the main repository whenever those files change on main/master.
+#
+# Uses the workflow GITHUB_TOKEN with contents:write — no personal PAT needed
+# for the same repository's wiki.
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "wiki/**"
+      - ".github/workflows/sync-wiki.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Push wiki pages
+        env:
+          # Prefer an optional WIKI_TOKEN secret; otherwise use the job token.
+          GH_TOKEN: ${{ secrets.WIKI_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git clone --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.wiki.git" \
+            wiki-target
+
+          # Publish every page except this directory's publish README.
+          shopt -s nullglob
+          for f in wiki/*.md; do
+            base="$(basename "$f")"
+            if [ "$base" = "README.md" ]; then
+              continue
+            fi
+            cp "$f" "wiki-target/$base"
+          done
+
+          cd wiki-target
+          git add -A
+
+          if git diff --staged --quiet; then
+            echo "Wiki already up to date — nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "Sync wiki from ${REPO}@${SHA:0:7}"
+          git push origin HEAD:master
+          echo "Wiki published: https://github.com/${REPO}/wiki"
