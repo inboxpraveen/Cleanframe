@@ -45,7 +45,7 @@ def _changed_mask(before: pd.Series, after: pd.Series) -> pd.Series:
         equal = (before.to_numpy() == after.to_numpy())
     except Exception:  # noqa: BLE001 - dtype mismatch -> fall back element-wise
         equal = pd.Series(
-            [_equal(b, a) for b, a in zip(before.tolist(), after.tolist(), strict=False)],
+            [_equal(b, a) for b, a in zip(before.tolist(), after.tolist(), strict=True)],
             index=before.index,
         ).to_numpy()
     equal = pd.Series(equal, index=before.index).fillna(False).astype(bool).to_numpy()
@@ -261,7 +261,7 @@ def compute_diff(
             continue
         befores = before_series.loc[changed_ids].tolist()
         afters = after_series.loc[changed_ids].tolist()
-        for row_id, before, after in zip(changed_ids, befores, afters, strict=False):
+        for row_id, before, after in zip(changed_ids, befores, afters, strict=True):
             diff.changes.append(CellChange(int(row_id), out_col, before, after))
 
     for src in all_columns:

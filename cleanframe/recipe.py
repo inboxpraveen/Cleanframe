@@ -37,6 +37,9 @@ RECIPE_VERSION = 1
 #: Keys allowed inside a column entry besides op names.
 _COLUMN_RESERVED = {"rename_to", "ops", "source", "name"}
 
+#: Allowed ValidationRule.on_fail values (typos must fail at load, not quarantine).
+_VALID_ON_FAIL = frozenset({"quarantine", "error", "warn", "drop", "null"})
+
 
 @dataclass
 class ValidationRule:
@@ -63,11 +66,16 @@ class ValidationRule:
     def from_dict(cls, raw: dict) -> ValidationRule:
         if not isinstance(raw, dict) or "column" not in raw or "check" not in raw:
             raise RecipeError(f"Validation rule must have 'column' and 'check': {raw!r}")
+        on_fail = str(raw.get("on_fail", "quarantine"))
+        if on_fail not in _VALID_ON_FAIL:
+            raise RecipeError(
+                f"Validation on_fail must be one of {sorted(_VALID_ON_FAIL)}, got {on_fail!r}."
+            )
         params = {k: v for k, v in raw.items() if k not in ("column", "check", "on_fail")}
         return cls(
             column=str(raw["column"]),
             check=str(raw["check"]),
-            on_fail=str(raw.get("on_fail", "quarantine")),
+            on_fail=on_fail,
             params=params,
         )
 

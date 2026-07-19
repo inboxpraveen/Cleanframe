@@ -221,8 +221,14 @@ def apply_validations(
     reasons: dict[int, list[str]] = {}
     log: list[str] = []
 
-    for rule, res in zip(rules, results, strict=False):
+    for rule, res in zip(rules, results, strict=True):
         if not res.found:
+            if mode is Mode.STRICT:
+                raise ValidationFailure(
+                    f"Validation failed under strict policy: column {res.column!r} "
+                    f"for check {res.check!r} is missing from the frame.",
+                    failures=[res],
+                )
             log.append(f"validation skipped: column {res.column!r} not found")
             continue
         if res.passed:

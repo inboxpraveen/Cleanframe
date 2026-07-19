@@ -55,6 +55,30 @@ def is_string_like(series: pd.Series) -> bool:
     return name in ("str", "string", "object") or name.startswith("string")
 
 
+def canonicalize_dtype(dtype: Any) -> str:
+    """Map a pandas dtype to a coarse family for cross-version drift comparison.
+
+    ``object`` / ``string`` / ``str`` (pandas 2 vs 3) collapse to ``string`` so a
+    fingerprint recorded under one pandas major doesn't false-alarm under another.
+    """
+    name = str(dtype).lower()
+    if name in ("object", "str", "string") or name.startswith("string"):
+        return "string"
+    if name == "category" or name.startswith("category"):
+        return "category"
+    if "bool" in name:
+        return "bool"
+    if "int" in name:
+        return "int"
+    if "float" in name or name == "double":
+        return "float"
+    if "datetime" in name or name.startswith("date"):
+        return "datetime"
+    if "timedelta" in name:
+        return "timedelta"
+    return name
+
+
 def snake_case(name: str) -> str:
     """``"Customer Name"`` / ``"CustomerName"`` / ``"Amt (INR)"`` -> ``customer_name`` / ``amt_inr``."""
     text = _CAMEL_RE.sub("_", str(name))
@@ -180,7 +204,7 @@ def safe_compile_regex(pattern: str, *, flags: int = 0) -> re.Pattern[str]:
 
 
 def sanitize_csv_value(value: Any) -> Any:
-    """Neutralise spreadsheet formula injection in a single CSV cell.
+    """Neutralise spreadsheet formula injection in a single CSV/Excel cell.
 
     Excel / Google Sheets / LibreOffice treat cells starting with ``=``, ``+``,
     ``-``, ``@``, or certain control characters as formulas. Prefixing with a
@@ -193,7 +217,7 @@ def sanitize_csv_value(value: Any) -> Any:
 
 
 def sanitize_dataframe_for_csv(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a copy of ``df`` with formula-like string cells escaped for CSV export."""
+    """Return a copy of ``df`` with formula-like string cells escaped for spreadsheet export."""
     if df.empty:
         return df
     out = df.copy()
@@ -202,6 +226,10 @@ def sanitize_dataframe_for_csv(df: pd.DataFrame) -> pd.DataFrame:
         if is_string_like(series):
             out[col] = series.map(sanitize_csv_value)
     return out
+
+
+# Alias — same escaping applies to Excel / LibreOffice workbook cells.
+sanitize_dataframe_for_spreadsheet = sanitize_dataframe_for_csv
 
 
 def ensure_string_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -270,11 +298,13 @@ __all__ = [
     "safe_compile_regex",
     "sanitize_csv_value",
     "sanitize_dataframe_for_csv",
+    "sanitize_dataframe_for_spreadsheet",
     "ensure_parent",
     "ensure_string_columns",
     "write_text",
     "read_text",
     "is_string_like",
+    "canonicalize_dtype",
     "DETECTOR_SAMPLE_CAP",
     "DEFAULT_MAX_DIFF_CHANGES",
     "MAX_REGEX_PATTERN_LENGTH",

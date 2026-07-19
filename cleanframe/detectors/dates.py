@@ -81,7 +81,23 @@ def _infer_formats(values: list[str], dayfirst: bool | None) -> tuple[list[str],
             kept.append(fmt)
             covered.loc[pending.index[hit.to_numpy()]] = True
     unparsed = int((~covered).sum())
-    return kept, unparsed
+    return _reconcile_slash_formats(kept, dayfirst), unparsed
+
+
+def _reconcile_slash_formats(formats: list[str], dayfirst: bool | None) -> list[str]:
+    """Never keep both day-first and month-first slash formats in one recipe.
+
+    Ambiguous values (both components ≤ 12) would silently swap day/month depending
+    on which format is tried first. Prefer the inferred/option direction; default
+    to day-first when nothing disambiguates (matches COMMON_DATE_FORMATS order).
+    """
+    has_day = any(f in _DAYFIRST_FORMATS for f in formats)
+    has_month = any(f in _MONTHFIRST_FORMATS for f in formats)
+    if not (has_day and has_month):
+        return formats
+    prefer_day = True if dayfirst is None else bool(dayfirst)
+    drop = _MONTHFIRST_FORMATS if prefer_day else _DAYFIRST_FORMATS
+    return [f for f in formats if f not in drop]
 
 
 @detector("dates", priority=40)

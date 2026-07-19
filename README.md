@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/cleanframe_logo.svg" alt="CleanFrame logo"/>
+  <img src="docs/assets/Logo.png" alt="CleanFrame logo"/>
 </p>
 
 <h1 align="center">CleanFrame</h1>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/cleanframe_repository_hero_preview.png" width="auto" alt="CleanFrame"/>
+  <img src="docs/assets/Hero.png" width="auto" alt="CleanFrame"/>
 </p>
 
 <p align="center">

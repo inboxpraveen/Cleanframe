@@ -91,7 +91,13 @@ def _as_frame(
             )
         df = data
         if columns is not None:  # a column projection is well-defined on a DataFrame
-            df = df[[c for c in columns if c in df.columns]]
+            missing = [c for c in columns if c not in df.columns]
+            if missing:
+                raise CleanFrameError(
+                    f"Requested column(s) not found: {missing}. "
+                    f"Available: {list(df.columns)}."
+                )
+            df = df[list(columns)]
         return ensure_string_columns(df), source  # read_kwargs (encoding/sep) are file-only
     if isinstance(data, (str, Path)):
         df = read_frame(
@@ -305,6 +311,12 @@ def apply_recipe(
     df, source = _as_frame(data, source, **effective)
 
     drift: DriftReport | None = None
+    if check_drift and not recipe_obj.source_fingerprint:
+        warnings.warn(
+            "CleanFrame: recipe has no source_fingerprint — drift check skipped. "
+            "Re-plan or stamp a fingerprint for production replay.",
+            stacklevel=2,
+        )
     if check_drift and recipe_obj.source_fingerprint:
         drift = detect_drift(df, recipe_obj, source=source)
         if drift.has_drift:

@@ -209,28 +209,39 @@ def _parse_unit_scalar(v):
         return None
 
 
-def _normalize_unit(series, to="g"):
+def _normalize_unit(series, to="g", emit_unit_column=False):
     to = _UNIT_ALIASES.get(str(to).casefold(), str(to).casefold())
     target_fam = _UNIT_FAMILY[to]
     target_factor = _UNIT_FACTORS[to]
-
-    def one(v):
+    amounts, units = [], []
+    for v in series.tolist():
         parsed = _parse_unit_scalar(v)
         if parsed is None:
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                return float(v)
-            if isinstance(v, str) and _STRICT_NUM_RE.match(v.strip().replace(",", ".")):
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and not (isinstance(v, float) and np.isnan(v)):
+                amounts.append(float(v))
+                units.append(to)
+            elif isinstance(v, str) and _STRICT_NUM_RE.match(v.strip().replace(",", ".")):
                 try:
-                    return float(v.replace(",", ".").strip())
+                    amounts.append(float(v.replace(",", ".").strip()))
+                    units.append(to)
                 except ValueError:
-                    return np.nan
-            return np.nan
+                    amounts.append(np.nan)
+                    units.append(None)
+            else:
+                amounts.append(np.nan)
+                units.append(None)
+            continue
         amount, unit = parsed
         if _UNIT_FAMILY[unit] != target_fam:
-            return np.nan
-        return amount * _UNIT_FACTORS[unit] / target_factor
-
-    return series.map(one)
+            amounts.append(np.nan)
+            units.append(unit)
+            continue
+        amounts.append(amount * _UNIT_FACTORS[unit] / target_factor)
+        units.append(unit)
+    out = pd.Series(amounts, index=series.index, dtype="float64")
+    if emit_unit_column:
+        return out, pd.Series(units, index=series.index)
+    return out
 
 
 def _to_bool(series):
@@ -288,6 +299,8 @@ def _v_in(s, values):
 
 
 def _v_matches(s, pattern):
+    if len(pattern) > 500:
+        raise ValueError(f"Regex pattern exceeds limit of 500 characters ({len(pattern)}).")
     compiled = re.compile(pattern)
     return s.isna() | s.map(lambda v: bool(compiled.search(str(v))))
 '''
@@ -304,14 +317,19 @@ def _remove_symbols(params: dict, c: str) -> list[str]:
 
 
 def _replace(params: dict, c: str) -> list[str]:
+    pattern = params["pattern"]
     if params.get("regex", True):
+        # Fail at export time with the same ReDoS / length guards the executor uses.
+        from ._util import safe_compile_regex
+
+        safe_compile_regex(pattern)
         return [
             f"    {_col(c)} = _smap({_col(c)}, "
-            f"lambda v: re.sub({params['pattern']!r}, {params.get('repl','')!r}, v))"
+            f"lambda v: re.sub({pattern!r}, {params.get('repl', '')!r}, v))"
         ]
     return [
         f"    {_col(c)} = _smap({_col(c)}, "
-        f"lambda v: v.replace({params['pattern']!r}, {params.get('repl','')!r}))"
+        f"lambda v: v.replace({pattern!r}, {params.get('repl', '')!r}))"
     ]
 
 
@@ -388,10 +406,39 @@ def _extract_currency_gen(params: dict, c: str) -> list[str]:
 
 def _normalize_unit_gen(params: dict, c: str) -> list[str]:
     to = params.get("to", "g")
-    lines = [f"    {_col(c)} = _normalize_unit({_col(c)}, to={to!r})"]
-    if params.get("emit_unit_column"):
-        lines.insert(0, f"    # NOTE: emit_unit_column={params['emit_unit_column']!r} not reproduced")
-    return lines
+    emit = params.get("emit_unit_column")
+    if emit:
+        return [
+            f"    {_col(c)}, df[{emit!r}] = _normalize_unit("
+            f"{_col(c)}, to={to!r}, emit_unit_column=True)"
+        ]
+    return [f"    {_col(c)} = _normalize_unit({_col(c)}, to={to!r})"]
+
+
+def _fill_na_gen(params: dict, c: str) -> list[str]:
+    col = _col(c)
+    strategy = params.get("strategy")
+    if strategy is None:
+        return [f"    {col} = {col}.fillna({params.get('value')!r})"]
+    strategy = str(strategy).lower()
+    if strategy == "mean":
+        return [f"    {col} = {col}.fillna(pd.to_numeric({col}, errors='coerce').mean())"]
+    if strategy == "median":
+        return [f"    {col} = {col}.fillna(pd.to_numeric({col}, errors='coerce').median())"]
+    if strategy == "mode":
+        return [
+            f"    _modes = {col}.dropna().mode()",
+            f"    {col} = {col} if len(_modes) == 0 else {col}.fillna(sorted(_modes.tolist(), key=str)[0])",
+        ]
+    if strategy in ("ffill", "pad"):
+        return [f"    {col} = {col}.ffill()"]
+    if strategy in ("bfill", "backfill"):
+        return [f"    {col} = {col}.bfill()"]
+    if strategy == "zero":
+        return [f"    {col} = {col}.fillna(0)"]
+    if strategy == "empty":
+        return [f"    {col} = {col}.fillna('')"]
+    return [f"    # NOTE: unknown fill_na strategy {strategy!r} not reproduced"]
 
 
 _SIMPLE: dict[str, str] = {
@@ -430,13 +477,7 @@ def _emit_column_op(op: Op, source: str) -> list[str]:
         arg = f"default_country_code={cc!r}" if cc else ""
         return [f"    {_col(source)} = _normalize_phone({_col(source)}{', ' + arg if arg else ''})"]
     if op.name == "fill_na":
-        if op.params.get("strategy"):
-            return [
-                f"    # fill_na strategy={op.params['strategy']!r} — adjust as needed",
-                f"    {_col(source)} = {_col(source)}.fillna("
-                f"{_col(source)}.median() if pd.api.types.is_numeric_dtype({_col(source)}) else '')",
-            ]
-        return [f"    {_col(source)} = {_col(source)}.fillna({op.params.get('value')!r})"]
+        return _fill_na_gen(op.params, source)
     if op.name == "round":
         return [
             f"    {_col(source)} = pd.to_numeric({_col(source)}, errors='coerce')"
@@ -472,6 +513,9 @@ def _mask_expr(rule: ValidationRule) -> str | None:
         return f"_v_in({col}, {_membership_values(rule)!r})"
     if check.startswith("matches") or check.startswith("regex"):
         pattern = rule.params.get("pattern") or re.sub(r"^(matches|regex):?\s*", "", check)
+        from ._util import safe_compile_regex
+
+        safe_compile_regex(str(pattern))
         return f"_v_matches({col}, {pattern!r})"
     return None
 

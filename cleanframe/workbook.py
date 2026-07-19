@@ -134,17 +134,28 @@ class WorkbookResult:
                 "formatting are lost when pandas re-emits a sheet. Write to a new path, "
                 "or pass overwrite=True if you accept a data-only rewrite."
             )
+        from ._util import sanitize_dataframe_for_spreadsheet
+
         ensure_parent(path)
+        used_sheet_names: dict[str, str] = {}
         try:
             with pd.ExcelWriter(path) as xl:
                 for name in self.sheet_order:
                     if name in self.sheets:
-                        frame = self.sheets[name].dataframe
+                        frame = sanitize_dataframe_for_spreadsheet(self.sheets[name].dataframe)
                     elif name in self.untouched:
-                        frame = self.untouched[name]
+                        frame = sanitize_dataframe_for_spreadsheet(self.untouched[name])
                     else:
                         continue
-                    frame.to_excel(xl, sheet_name=name[:31], index=False)
+                    sheet_name = name[:31]
+                    if sheet_name in used_sheet_names and used_sheet_names[sheet_name] != name:
+                        raise CleanFrameError(
+                            f"Excel sheet name collision after 31-char truncation: "
+                            f"{name!r} and {used_sheet_names[sheet_name]!r} both become "
+                            f"{sheet_name!r}. Rename one of the sheets before writing."
+                        )
+                    used_sheet_names[sheet_name] = name
+                    frame.to_excel(xl, sheet_name=sheet_name, index=False)
         except ImportError as exc:  # pragma: no cover
             raise CleanFrameError(
                 "Writing .xlsx requires openpyxl. Try `pip install cleanframe[excel]`."
