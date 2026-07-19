@@ -149,11 +149,12 @@ def _looks_date(value: str) -> bool:
     return bool(_DATEISH_RE.search(value)) and bool(_DIGIT_RE.search(value))
 
 
-def _count_date_matches(values: list[str]) -> int:
+def _matching_dates(values: list[str]) -> list[str]:
+    """Return the subset of ``values`` that look like and parse as a common date."""
     dateish = [v for v in values if _looks_date(v)]
     if not dateish:
-        return 0
-    ser = pd.Series(dateish)
+        return []
+    ser = pd.Series(dateish, dtype="object")
     matched = pd.Series(False, index=ser.index)
     for fmt in COMMON_DATE_FORMATS:
         pending = ser[~matched]
@@ -161,7 +162,7 @@ def _count_date_matches(values: list[str]) -> int:
             break
         parsed = pd.to_datetime(pending, format=fmt, errors="coerce")
         matched.loc[pending.index[parsed.notna().to_numpy()]] = True
-    return int(matched.sum())
+    return ser[matched].tolist()
 
 
 def _looks_currency(value: str) -> bool:
@@ -203,15 +204,6 @@ def _is_strict_numeric(value: str) -> bool:
     return bool(_STRICT_NUM_RE.match(s))
 
 
-def _numeric_signal(values: list[str]) -> tuple[float, bool]:
-    """Return ``(fraction_strictly_numeric, any_have_decimals)``."""
-    if not values:
-        return 0.0, False
-    numeric = [v for v in values if _is_strict_numeric(v)]
-    has_decimal = any("." in v for v in numeric)
-    return _frac(len(numeric), len(values)), has_decimal
-
-
 def _infer_semantic_type(
     name: str, series: pd.Series, count: int, unique_count: int
 ) -> tuple[str, float, dict[str, float]]:
@@ -239,14 +231,28 @@ def _infer_semantic_type(
     if total == 0:
         return "text", 0.0, signals
 
-    frac_bool = _frac(sum(1 for v in values if v.strip().casefold() in _BOOL_TOKENS), total)
-    frac_email = _frac(sum(1 for v in values if EMAIL_RE.match(v.strip())), total)
-    frac_url = _frac(sum(1 for v in values if URL_RE.match(v.strip())), total)
-    frac_currency = _frac(sum(1 for v in values if _looks_currency(v)), total)
-    frac_unit = _frac(sum(1 for v in values if _looks_unit(v)), total)
-    frac_date = _frac(_count_date_matches(values), total)
-    frac_phone = _frac(sum(1 for v in values if _looks_phone(v)), total)
-    frac_numeric, numeric_has_decimal = _numeric_signal(values)
+    # Evaluate each pattern predicate once per DISTINCT value, weighted by frequency.
+    # A 5000-value sample of a low-cardinality column has only a handful of distinct
+    # values; scoring each predicate per-occurrence re-does identical work. Fractions
+    # are exact (weighted counts), so classification is byte-identical.
+    from collections import Counter
+
+    vcounts = Counter(values)
+    distinct = list(vcounts)
+
+    def _wfrac(pred) -> float:
+        return sum(vcounts[v] for v in distinct if pred(v)) / total
+
+    frac_bool = _wfrac(lambda v: v.strip().casefold() in _BOOL_TOKENS)
+    frac_email = _wfrac(lambda v: bool(EMAIL_RE.match(v.strip())))
+    frac_url = _wfrac(lambda v: bool(URL_RE.match(v.strip())))
+    frac_currency = _wfrac(_looks_currency)
+    frac_unit = _wfrac(_looks_unit)
+    frac_phone = _wfrac(_looks_phone)
+    frac_date = sum(vcounts[v] for v in _matching_dates(distinct)) / total
+    numeric_distinct = [v for v in distinct if _is_strict_numeric(v)]
+    frac_numeric = sum(vcounts[v] for v in numeric_distinct) / total
+    numeric_has_decimal = any("." in v for v in numeric_distinct)
 
     signals.update(
         bool=round(frac_bool, 3), email=round(frac_email, 3), url=round(frac_url, 3),
@@ -282,11 +288,14 @@ def _infer_semantic_type(
 
 
 def _value_counts_stable(series: pd.Series, top: int = 10) -> list[tuple[Any, int]]:
+    import heapq
+
     vc = series.dropna().value_counts()
-    pairs = list(vc.items())
-    # Deterministic tie-break: count desc, then string of value asc.
-    pairs.sort(key=lambda kv: (-int(kv[1]), str(kv[0])))
-    return [(k, int(v)) for k, v in pairs[:top]]
+    # Deterministic tie-break: count desc, then string of value asc. heapq.nsmallest
+    # is sorted(...)[:top] without materialising/sorting every unique value, which
+    # matters on high-cardinality columns (millions of near-unique values).
+    pairs = heapq.nsmallest(top, vc.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))
+    return [(k, int(v)) for k, v in pairs]
 
 
 def profile_column(series: pd.Series, name: str | None = None) -> ColumnProfile:

@@ -37,6 +37,25 @@ pip install "cleanframe[excel]"
 pip install "cleanframe[parquet]"
 ```
 
+## How do I clean an Excel file with multiple sheets?
+
+Multi-sheet workbooks now raise if no sheet is chosen. Use
+`cf.clean_workbook(path)` or `cleanframe clean file.xlsx` to clean every tab
+(one recipe + diff per sheet), or pass `sheet=` to pick one.
+
+## Can it handle files bigger than memory?
+
+Yes — `cf.stream_apply(recipe, in_path, out_path, chunksize=N)` (CLI
+`apply FILE --recipe R --chunksize N`) replays row-independent recipes
+out-of-core. Global ops (dedup, `fill_na` mean/median/…) are refused; peak
+memory is bounded by the chunk size, not file size.
+
+## It read my CSV as one column / wrong encoding?
+
+Read-time format auto-correction detects the delimiter and encoding by default
+and pins them into the recipe. Pass `--no-correct` (`correct_format=False`) to
+disable; an ambiguous delimiter raises rather than guessing.
+
 ## Is the HTML report XSS-safe?
 
 Yes — Jinja2 autoescape is on; covered by tests.

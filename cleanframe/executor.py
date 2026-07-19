@@ -54,13 +54,33 @@ def execute(
     max_diff_changes:
         Cap on stored cell-level diff entries (default 100_000). Pass ``None`` to
         store every change. Counts remain exact when truncated.
+
+    Memory model
+    ------------
+    Peak extra allocation is roughly ``input + (op-touched columns snapshot) +
+    (up to max_diff_changes CellChange records)`` — NOT two full frames. Only the
+    columns an op can change are snapshotted for the diff; pass-through columns are
+    read back from the final frame. So a 500 MB frame cleans in well under 2x RAM,
+    and the diff detail is bounded by ``max_diff_changes`` regardless of frame size.
     """
     from ._util import ensure_string_columns
 
     mode = Mode.coerce(mode)
     # Stable positional row id (survives renames and row drops for the diff).
     work = ensure_string_columns(df).reset_index(drop=True)
-    original = work.copy()
+    n_rows_before = int(len(work))
+    original_columns = [str(c) for c in work.columns]
+    # Snapshot ONLY the columns whose *values* an op can change (column-op sources +
+    # validation targets), not the whole frame. Pass-through columns are read back
+    # from the final frame in the diff, which roughly halves peak memory on wide or
+    # large inputs. This set is complete: the only value-mutating paths are column
+    # ops (need a ColumnRecipe with ops) and the ``null`` validation policy.
+    rename_reverse = {c.rename_to: c.source for c in recipe.columns if c.rename_to}
+    snapshot_sources = {c.source for c in recipe.columns if c.ops}
+    for v in recipe.validations:
+        snapshot_sources.add(rename_reverse.get(v.column, v.column))
+    snapshot_cols = [c for c in original_columns if c in snapshot_sources]
+    original = work[snapshot_cols].copy()
     log: list[str] = []
     dropped_rows: list[tuple[int, str]] = []
 
@@ -102,6 +122,11 @@ def execute(
                 raise ExecutionError(
                     f"Two ops emit the same derived column {name!r}; rename one target."
                 )
+            # If this emit overwrites a pre-existing column that wasn't in the partial
+            # snapshot, capture its still-original value now (before the overwrite) so
+            # the clobber is tracked in the diff — robust to any emit op.
+            if name in original_columns and name not in original.columns:
+                original[name] = work[name].copy()
             work[name] = extra.reindex(work.index)
             if name not in source_of:
                 source_of[name] = None  # brand-new derived column, no "before"
@@ -167,7 +192,8 @@ def execute(
         source_of,
         dropped_rows=dropped_rows,
         dropped_after=dropped_after,
-        n_rows_before=int(len(original)),
+        original_columns=original_columns,
+        n_rows_before=n_rows_before,
         max_changes=max_diff_changes,
     )
     if diff.truncated:

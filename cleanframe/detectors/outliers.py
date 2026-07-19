@@ -49,7 +49,9 @@ def detect_outliers(series: pd.Series, ctx: DetectorContext) -> Issues:
     if n == 0:
         return issues
 
-    examples = numeric[mask].tolist()
+    # Slice to the cap BEFORE materialising — a column with millions of outliers must
+    # not build a giant throwaway Python list just to keep 5 examples.
+    examples = numeric[mask].head(5).tolist()
     issues.add(
         "outliers",
         f"{n} outlier value(s) outside IQR fence [{low:.4g}, {high:.4g}]",

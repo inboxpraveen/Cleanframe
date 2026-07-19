@@ -62,11 +62,24 @@ from .recipe import ColumnRecipe, Recipe, ValidationRule
 from .result import CleanResult, CodeArtifact, Report
 from .schema import Schema, SchemaColumn
 
+# -- out-of-core streaming replay ------------------------------------------
+from .streaming import StreamSummary, check_streamable, stream_apply
+
 # -- core types ------------------------------------------------------------
 from .types import LLMExposure, Mode, Op, Severity
 
 # -- validators ------------------------------------------------------------
 from .validate import list_validators, validator
+
+# -- multi-sheet workbooks -------------------------------------------------
+from .workbook import (
+    WorkbookRecipe,
+    WorkbookResult,
+    apply_workbook,
+    clean_workbook,
+    load_recipe,
+    read_workbook,
+)
 
 __all__ = [
     "__version__",
@@ -128,6 +141,17 @@ __all__ = [
     "read_frame",
     "write_frame",
     "generate_code",
+    # workbooks
+    "clean_workbook",
+    "apply_workbook",
+    "read_workbook",
+    "load_recipe",
+    "WorkbookResult",
+    "WorkbookRecipe",
+    # streaming
+    "stream_apply",
+    "check_streamable",
+    "StreamSummary",
     # errors
     "CleanFrameError",
     "RecipeError",

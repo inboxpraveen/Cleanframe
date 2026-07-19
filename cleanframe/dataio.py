@@ -29,14 +29,60 @@ _CSV_READ_ENCODING = "utf-8-sig"
 _CSV_WRITE_ENCODING = "utf-8"
 
 
-def read_frame(path: str | Path, **kwargs) -> pd.DataFrame:
-    """Read a dataframe, dispatching on file extension.
+_EXCEL_SUFFIXES = (".xlsx", ".xls", ".xlsm")
 
-    Any failure that pandas/pyarrow would surface as a raw traceback (a decode
-    error, a malformed/ragged file, an empty file, a mislabeled extension, a
-    directory path) is re-raised as a :class:`~cleanframe.errors.CleanFrameError`
-    with an actionable hint, so callers can rely on the documented
-    ``except cleanframe.CleanFrameError`` contract.
+
+def excel_sheet_names(path: str | Path) -> list[str]:
+    """Return a workbook's sheet names in file order (raises CleanFrameError on error)."""
+    path = Path(path)
+    try:
+        return list(pd.ExcelFile(path).sheet_names)
+    except ImportError as exc:  # pragma: no cover - optional engine missing
+        raise CleanFrameError(
+            f"Reading Excel requires openpyxl: {exc}. Try `pip install cleanframe[excel]`."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise CleanFrameError(f"Could not open workbook {path.name}: {exc}.") from exc
+
+
+def _apply_row_slice(df: pd.DataFrame, nrows: int | None, skiprows) -> pd.DataFrame:
+    """Post-read row selection for formats without native nrows/skiprows (parquet/json)."""
+    if skiprows is not None:
+        if isinstance(skiprows, int):
+            df = df.iloc[skiprows:]
+        else:
+            keep = [i for i in range(len(df)) if i not in set(skiprows)]
+            df = df.iloc[keep]
+    if nrows is not None:
+        df = df.head(nrows)
+    return df
+
+
+def read_frame(
+    path: str | Path,
+    *,
+    sheet: str | int | None = None,
+    columns: list[str] | None = None,
+    nrows: int | None = None,
+    skiprows: int | list[int] | None = None,
+    **kwargs,
+) -> pd.DataFrame:
+    """Read a single dataframe, dispatching on file extension.
+
+    Parameters
+    ----------
+    sheet:
+        Excel only — a sheet name or 0-based index. If a workbook has more than one
+        sheet and none is chosen, a :class:`~cleanframe.errors.CleanFrameError` is
+        raised (never silently pick the first). Use :func:`cleanframe.clean_workbook`
+        to clean every sheet.
+    columns / nrows / skiprows:
+        Select a subset of columns (``usecols``) and/or a row range. ``columns`` is a
+        *filter*, not a reorder — output keeps file order. Under ``skiprows``/``nrows``
+        the diff's ``row_id`` is relative to the loaded slice, not the physical file line.
+
+    Any failure pandas/pyarrow would surface as a raw traceback is re-raised as a
+    :class:`~cleanframe.errors.CleanFrameError` with an actionable hint.
     """
     path = Path(path)
     if not path.exists():
@@ -46,21 +92,50 @@ def read_frame(path: str | Path, **kwargs) -> pd.DataFrame:
     if path.stat().st_size == 0:
         raise CleanFrameError(f"Input file is empty (no columns to parse): {path}")
     suffix = path.suffix.lower()
+    is_excel = suffix in _EXCEL_SUFFIXES
+    if sheet is not None and not is_excel:
+        raise CleanFrameError(f"sheet= is only valid for Excel files, not {suffix or 'this file'}.")
     try:
-        if suffix in (".csv", ".txt"):
-            kwargs.setdefault("encoding", _CSV_READ_ENCODING)
-            return pd.read_csv(path, **kwargs)
-        if suffix == ".tsv":
-            kwargs.setdefault("encoding", _CSV_READ_ENCODING)
-            return pd.read_csv(path, sep="\t", **kwargs)
-        if suffix in (".xlsx", ".xls", ".xlsm"):
-            return pd.read_excel(path, **kwargs)
+        if is_excel:
+            if sheet is None:
+                names = excel_sheet_names(path)
+                if len(names) > 1:
+                    raise CleanFrameError(
+                        f"{path.name} has {len(names)} sheets ({names}). Pass sheet='NAME' "
+                        "(or a 0-based index) to pick one, or use cleanframe.clean_workbook() "
+                        "/ the `cleanframe clean` CLI, which cleans every sheet."
+                    )
+                sheet = 0
+            xl_kwargs = dict(kwargs)
+            if columns is not None:
+                xl_kwargs["usecols"] = list(columns)
+            if nrows is not None:
+                xl_kwargs["nrows"] = nrows
+            if skiprows is not None:
+                xl_kwargs["skiprows"] = skiprows
+            df = pd.read_excel(path, sheet_name=sheet, **xl_kwargs)
+            if isinstance(df, dict):
+                raise CleanFrameError("sheet must select a single sheet (a name or index).")
+            return df
         if suffix == ".parquet":
-            return pd.read_parquet(path, **kwargs)
+            df = pd.read_parquet(path, columns=list(columns) if columns else None, **kwargs)
+            return _apply_row_slice(df, nrows, skiprows)
         if suffix == ".json":
             kwargs.setdefault("encoding", "utf-8")
-            return pd.read_json(path, **kwargs)
+            df = pd.read_json(path, **kwargs)
+            if columns is not None:
+                df = df[[c for c in columns if c in df.columns]]
+            return _apply_row_slice(df, nrows, skiprows)
+        # CSV family (.csv/.txt/.tsv and unknown extensions).
         kwargs.setdefault("encoding", _CSV_READ_ENCODING)
+        if suffix == ".tsv":
+            kwargs.setdefault("sep", "\t")
+        if columns is not None:
+            kwargs["usecols"] = list(columns)
+        if nrows is not None:
+            kwargs["nrows"] = nrows
+        if skiprows is not None:
+            kwargs["skiprows"] = skiprows
         return pd.read_csv(path, **kwargs)
     except ImportError as exc:  # pragma: no cover - optional engine missing
         hint = "Try `pip install cleanframe[excel]` for Excel support."
@@ -137,4 +212,4 @@ def write_frame(
     return path
 
 
-__all__ = ["read_frame", "write_frame"]
+__all__ = ["read_frame", "write_frame", "excel_sheet_names"]

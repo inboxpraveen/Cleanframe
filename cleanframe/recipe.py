@@ -128,6 +128,9 @@ class Recipe:
     validations: list[ValidationRule] = field(default_factory=list)
     source_fingerprint: dict | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    #: Optional read/selection binding (sheet, columns, nrows, skiprows, and — from
+    #: the read-time format corrector — delimiter/encoding). Present => recipe v2.
+    read: dict[str, Any] | None = None
 
     # -- convenience -----------------------------------------------------
     def column(self, source: str) -> ColumnRecipe | None:
@@ -149,7 +152,11 @@ class Recipe:
     # -- serialisation ---------------------------------------------------
     def to_dict(self) -> dict:
         """Canonical dict form (block-style, README-shaped)."""
-        out: dict[str, Any] = {"version": self.version}
+        # A recipe stays v1 unless it carries a read: section, so plain recipes remain
+        # readable by older builds (forward-compat) and existing round-trips are stable.
+        out: dict[str, Any] = {"version": 2 if self.read else 1}
+        if self.read:
+            out["read"] = dict(self.read)
         if self.source_fingerprint is not None:
             out["source_fingerprint"] = self.source_fingerprint
         if self.columns:
@@ -192,12 +199,21 @@ class Recipe:
     def from_dict(cls, raw: dict) -> Recipe:
         if not isinstance(raw, dict):
             raise RecipeError("A recipe must be a mapping at the top level.")
+        if "sheets" in raw or "workbook" in raw:
+            raise RecipeError(
+                "This looks like a workbook recipe (it has a 'sheets' block). "
+                "Load it with cleanframe.WorkbookRecipe.load() / cleanframe.load_recipe()."
+            )
 
         version = int(raw.get("version", RECIPE_VERSION))
-        if version != RECIPE_VERSION:
+        if version not in (1, 2):
             raise RecipeError(
-                f"Unsupported recipe version {version}. This build reads v{RECIPE_VERSION}."
+                f"Unsupported recipe version {version}. This build reads v1 and v2."
             )
+
+        read = raw.get("read")
+        if read is not None and not isinstance(read, dict):
+            raise RecipeError("The recipe 'read' section must be a mapping of read options.")
 
         columns: list[ColumnRecipe] = []
         raw_columns = raw.get("columns", {}) or {}
@@ -225,7 +241,7 @@ class Recipe:
 
         known_top = {
             "version", "source_fingerprint", "columns", "dedup", "frame_ops",
-            "validate", "meta",
+            "validate", "meta", "read",
         }
         unknown = set(raw) - known_top
         if unknown:
@@ -238,6 +254,7 @@ class Recipe:
             validations=validations,
             source_fingerprint=raw.get("source_fingerprint"),
             meta=raw.get("meta", {}) or {},
+            read=read,
         )
 
     @classmethod

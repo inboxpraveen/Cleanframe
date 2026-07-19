@@ -35,13 +35,39 @@ def _default_out(file: str, suffix: str) -> Path:
     return Path(file).with_suffix(suffix)
 
 
+def _add_selection_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--sheet", help="Excel sheet name or 0-based index to read")
+    parser.add_argument("--columns", help="comma-separated column subset to read")
+    parser.add_argument("--nrows", type=int, help="read only the first N rows")
+    parser.add_argument("--skiprows", type=int, help="skip the first N rows (after the header)")
+
+
+def _selection_kwargs(args: argparse.Namespace) -> dict:
+    out: dict = {}
+    sheet = getattr(args, "sheet", None)
+    if sheet is not None:
+        # Accept a 0-based index or a sheet name.
+        out["sheet"] = int(sheet) if sheet.lstrip("-").isdigit() else sheet
+    cols = getattr(args, "columns", None)
+    if cols:
+        out["columns"] = [c.strip() for c in cols.split(",") if c.strip()]
+    if getattr(args, "nrows", None) is not None:
+        out["nrows"] = args.nrows
+    if getattr(args, "skiprows", None) is not None:
+        # argparse gives an int; read_frame/pandas skip the first N data lines.
+        out["skiprows"] = list(range(1, args.skiprows + 1))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # command handlers
 # ---------------------------------------------------------------------------
 def _cmd_report(args: argparse.Namespace) -> int:
     from . import report as _report
 
-    rep = _report(args.file, schema=args.schema)
+    rep = _report(
+        args.file, schema=args.schema, correct_format=not args.no_correct, **_selection_kwargs(args)
+    )
     out = Path(args.out) if args.out else _default_out(args.file, ".report.html")
     rep.save(out)
     q = rep.quality
@@ -55,8 +81,50 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_multisheet_workbook(file: str, selection: dict) -> bool:
+    """A multi-sheet .xlsx with no explicit --sheet -> clean every tab (workbook mode)."""
+    path = Path(file)
+    if path.suffix.lower() not in (".xlsx", ".xls", ".xlsm") or "sheet" in selection:
+        return False
+    try:
+        from .dataio import excel_sheet_names
+
+        return len(excel_sheet_names(path)) > 1
+    except CleanFrameError:
+        return False
+
+
+def _cmd_clean_workbook(args: argparse.Namespace) -> int:
+    from .workbook import clean_workbook
+
+    result = clean_workbook(
+        args.file,
+        target_schema=args.schema,
+        llm=args.llm,
+        mode=args.mode,
+        max_tokens_budget=args.max_tokens,
+        llm_exposure=args.llm_exposure,
+    )
+    recipe_out = Path(args.recipe) if args.recipe else _default_out(args.file, ".recipe.yaml")
+    result.save_recipe(recipe_out)
+    print(f"✓ Workbook recipe → {recipe_out}  ({len(result.sheets)} sheet(s) cleaned)")
+    if args.out:
+        overwrite = Path(args.out).resolve() == Path(args.file).resolve()
+        result.save_data(args.out, overwrite=overwrite)
+        print(f"✓ Cleaned workbook → {args.out}")
+    print()
+    print(result.summary())
+    if not args.out:
+        print("\n  (pass --out cleaned.xlsx to write every cleaned sheet back)")
+    return 0
+
+
 def _cmd_clean(args: argparse.Namespace) -> int:
     from . import clean as _clean
+
+    selection = _selection_kwargs(args)
+    if _is_multisheet_workbook(args.file, selection):
+        return _cmd_clean_workbook(args)
 
     result = _clean(
         args.file,
@@ -65,6 +133,8 @@ def _cmd_clean(args: argparse.Namespace) -> int:
         mode=args.mode,
         max_tokens_budget=args.max_tokens,
         llm_exposure=args.llm_exposure,
+        correct_format=not args.no_correct,
+        **selection,
     )
     recipe_out = Path(args.recipe) if args.recipe else _default_out(args.file, ".recipe.yaml")
     result.recipe.save(recipe_out)
@@ -95,19 +165,67 @@ def _cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_apply_workbook(args: argparse.Namespace, recipe) -> int:
+    from .errors import DriftError
+    from .workbook import apply_workbook
+
+    on_drift = "ignore" if args.force else "error"
+    try:
+        result = apply_workbook(
+            args.file, recipe, mode=args.mode,
+            check_drift=not args.no_drift_check, on_drift=on_drift,
+        )
+    except DriftError as exc:
+        print(exc.report.render() if exc.report is not None else str(exc))
+        print("\nStopped — re-run with --force to apply anyway.")
+        return 1
+    out = Path(args.out) if args.out else _default_out(args.file, ".clean.xlsx")
+    overwrite = Path(out).resolve() == Path(args.file).resolve()
+    result.save_data(out, overwrite=overwrite)
+    print(f"✓ Cleaned workbook → {out}")
+    print()
+    print(result.summary())
+    return 0
+
+
 def _cmd_apply(args: argparse.Namespace) -> int:
     from . import apply_recipe
     from .errors import DriftError
+    from .workbook import WorkbookRecipe, load_recipe
+
+    # A workbook recipe (has a 'sheets:' block) cleans every tab.
+    loaded = load_recipe(args.recipe)
+    if isinstance(loaded, WorkbookRecipe):
+        return _cmd_apply_workbook(args, loaded)
+
+    # Out-of-core streaming replay (row-independent recipes only; refuses global ops).
+    if getattr(args, "chunksize", None):
+        from .streaming import stream_apply
+
+        out = Path(args.out) if args.out else _default_out(args.file, ".clean.csv")
+        try:
+            summary = stream_apply(
+                loaded, args.file, out, chunksize=args.chunksize, mode=args.mode,
+                check_drift=not args.no_drift_check, on_drift="ignore" if args.force else "error",
+            )
+        except DriftError as exc:
+            print(exc.report.render() if exc.report is not None else str(exc))
+            print("\nStopped — re-run with --force to stream anyway.")
+            return 1
+        print(f"✓ Streamed → {out}")
+        print(summary.render())
+        return 0
 
     # Default: stop on drift (matches README). --force continues anyway.
     on_drift = "ignore" if args.force else "error"
     try:
         result = apply_recipe(
             args.file,
-            args.recipe,
+            loaded,
             mode=args.mode,
             check_drift=not args.no_drift_check,
             on_drift=on_drift,
+            **_selection_kwargs(args),
         )
     except DriftError as exc:
         print(exc.report.render() if exc.report is not None else str(exc))
@@ -158,7 +276,7 @@ def _cmd_suggest(args: argparse.Namespace) -> int:
 def _cmd_infer_schema(args: argparse.Namespace) -> int:
     from . import infer_schema
 
-    schema = infer_schema(args.file, name=args.name)
+    schema = infer_schema(args.file, name=args.name, **_selection_kwargs(args))
     out = Path(args.out) if args.out else _default_out(args.file, ".schema.yaml")
     schema.save(out)
     print(f"✓ Schema ({len(schema.columns)} columns) → {out}")
@@ -201,6 +319,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", "-o", help="output .html (default: <file>.report.html)")
     p.add_argument("--schema", help="target schema YAML (adds mapping diagnostics)")
     p.add_argument("--open", action="store_true", help="open the report in a browser")
+    p.add_argument("--no-correct", action="store_true", help="disable read-time format auto-detection")
+    _add_selection_args(p)
     p.set_defaults(func=_cmd_report)
 
     p = sub.add_parser("clean", help="plan and clean a file")
@@ -224,6 +344,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="what the LLM may see (default: metadata — never raw cells)",
     )
     p.add_argument("--mode", default="review", choices=["review", "auto", "strict"])
+    p.add_argument("--no-correct", action="store_true", help="disable read-time format auto-detection")
+    _add_selection_args(p)
     p.set_defaults(func=_cmd_clean)
 
     p = sub.add_parser("apply", help="replay a saved recipe (no LLM)")
@@ -238,6 +360,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="apply even when schema drift is detected (default: stop)",
     )
+    p.add_argument(
+        "--chunksize",
+        type=int,
+        help="stream the CSV in chunks of N rows (out-of-core; row-independent recipes only)",
+    )
+    _add_selection_args(p)
     p.set_defaults(func=_cmd_apply)
 
     p = sub.add_parser("suggest", help="detect drift and optionally patch the recipe")
@@ -251,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file")
     p.add_argument("--out", help="schema output (default: <file>.schema.yaml)")
     p.add_argument("--name", help="schema name")
+    _add_selection_args(p)
     p.set_defaults(func=_cmd_infer_schema)
 
     sub.add_parser("detectors", help="list available detectors").set_defaults(func=_cmd_detectors)
