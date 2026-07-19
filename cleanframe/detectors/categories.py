@@ -29,6 +29,11 @@ from .base import DetectorContext, detector
 #: Above this cardinality a column is treated as free text, not categories.
 _MAX_CATEGORY_CARDINALITY = 60
 _FUZZY_THRESHOLD = 0.86
+#: A fuzzy typo cluster only merges when the variant is this much rarer than the
+#: canonical it would fold into. This stops two *both-frequent* look-alikes
+#: (``insured``/``uninsured``, ``activated``/``deactivated``) from collapsing —
+#: a real typo is nearly always far rarer than the correct spelling.
+_FUZZY_MERGE_MAX_RATIO = 0.34
 _WS = re.compile(r"\s+")
 
 
@@ -78,9 +83,17 @@ def _cluster(counts: dict[str, int], seed_map: dict[str, str] | None) -> dict[st
     reps: list[str] = []
     for key in ordered:
         canon = canon_of_group[key]
+        key_count = sum(groups[key].values())
         match = None
         for rep in reps:
-            if similarity(canon, canon_of_group[rep]) >= _FUZZY_THRESHOLD:
+            # Only fold this group into `rep` if it is BOTH near-identical in
+            # spelling AND rare relative to it — otherwise two distinct, comparably
+            # frequent categories would be silently merged (semantic inversion).
+            rep_count = sum(groups[rep].values())
+            if (
+                similarity(canon, canon_of_group[rep]) >= _FUZZY_THRESHOLD
+                and key_count <= rep_count * _FUZZY_MERGE_MAX_RATIO
+            ):
                 match = rep
                 break
         if match is None:

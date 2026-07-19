@@ -30,10 +30,21 @@ _CSV_WRITE_ENCODING = "utf-8"
 
 
 def read_frame(path: str | Path, **kwargs) -> pd.DataFrame:
-    """Read a dataframe, dispatching on file extension."""
+    """Read a dataframe, dispatching on file extension.
+
+    Any failure that pandas/pyarrow would surface as a raw traceback (a decode
+    error, a malformed/ragged file, an empty file, a mislabeled extension, a
+    directory path) is re-raised as a :class:`~cleanframe.errors.CleanFrameError`
+    with an actionable hint, so callers can rely on the documented
+    ``except cleanframe.CleanFrameError`` contract.
+    """
     path = Path(path)
     if not path.exists():
         raise CleanFrameError(f"Input file not found: {path}")
+    if not path.is_file():
+        raise CleanFrameError(f"Input path is not a file (is it a directory?): {path}")
+    if path.stat().st_size == 0:
+        raise CleanFrameError(f"Input file is empty (no columns to parse): {path}")
     suffix = path.suffix.lower()
     try:
         if suffix in (".csv", ".txt"):
@@ -56,6 +67,20 @@ def read_frame(path: str | Path, **kwargs) -> pd.DataFrame:
         if suffix == ".parquet":
             hint = "Try `pip install cleanframe[parquet]` (pyarrow) for Parquet support."
         raise CleanFrameError(f"Reading {suffix} requires an extra engine: {exc}. {hint}") from exc
+    except CleanFrameError:
+        raise
+    except UnicodeDecodeError as exc:
+        raise CleanFrameError(
+            f"Could not decode {path.name} as UTF-8 ({exc}). It may be saved as "
+            "Latin-1 / Windows-1252 / UTF-16 (common for Excel 'Save as CSV' on "
+            "Windows) — pass encoding='cp1252' (or the correct codec) to read_frame."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - IO boundary: surface any parse failure cleanly
+        raise CleanFrameError(
+            f"Could not read {path.name}: {type(exc).__name__}: {exc}. "
+            "Check the delimiter/quoting, that the file matches its extension, and "
+            "that it is not truncated."
+        ) from exc
 
 
 def write_frame(

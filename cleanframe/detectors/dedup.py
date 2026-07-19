@@ -49,7 +49,13 @@ def _fuzzy_pairs(df: pd.DataFrame, column: str) -> list[dict]:
         return []
     # Cap pairwise work; take a stable head so results don't depend on shuffle.
     work = df.head(_FUZZY_MAX_ROWS)
-    values = [(int(idx), str(v).strip()) for idx, v in work[column].items() if pd.notna(v)]
+    # Use positional ids (0..n-1) not the index label — labels may be strings,
+    # Timestamps, or anything else, and int(label) would crash on them.
+    values = [
+        (pos, str(v).strip())
+        for pos, (_idx, v) in enumerate(work[column].items())
+        if pd.notna(v)
+    ]
     pairs: list[dict] = []
     for i in range(len(values)):
         idx_i, a = values[i]

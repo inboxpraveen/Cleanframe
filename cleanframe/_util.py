@@ -18,6 +18,8 @@ from typing import Any
 
 import pandas as pd
 
+from .errors import CleanFrameError
+
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _NON_ALNUM_RE = re.compile(r"[^0-9a-zA-Z]+")
 
@@ -120,6 +122,24 @@ def sample_non_null(series: pd.Series, cap: int = DETECTOR_SAMPLE_CAP) -> list[A
     return non_null.tolist()
 
 
+_QUANTIFIED_ALT_RE = re.compile(r"\(([^()]*\|[^()]*)\)\s*(?:[+*]|\{)")
+
+
+def _has_overlapping_alternation(pattern: str) -> bool:
+    """True if a quantified group contains alternatives where one is a prefix of another.
+
+    ``(a|aa)+`` / ``(a|a)*`` backtrack catastrophically; ``(cat|dog)+`` does not.
+    Best-effort (single-level groups) — a guard, not a proof.
+    """
+    for m in _QUANTIFIED_ALT_RE.finditer(pattern):
+        alts = [a for a in m.group(1).split("|")]
+        for i, a in enumerate(alts):
+            for j, b in enumerate(alts):
+                if i != j and a and b.startswith(a):
+                    return True
+    return False
+
+
 def safe_compile_regex(pattern: str, *, flags: int = 0) -> re.Pattern[str]:
     """Compile a user/recipe regex with length and complexity guards.
 
@@ -138,6 +158,20 @@ def safe_compile_regex(pattern: str, *, flags: int = 0) -> re.Pattern[str]:
         raise ValueError(
             "Regex pattern looks like a nested-quantifier ReDoS risk; "
             "simplify it or split into multiple safer checks."
+        )
+    # An optional inside a quantified group — (a?)+ — can match empty then repeat,
+    # another catastrophic-backtracking shape that the check above misses.
+    if re.search(r"\([^)]*\?\s*\)\s*[+*]", pattern):
+        raise ValueError(
+            "Regex pattern has an optional inside a quantified group (e.g. (a?)+), "
+            "a catastrophic-backtracking risk; simplify it."
+        )
+    # Overlapping alternation in a quantified group — (a|aa)+ — where one alternative
+    # is a prefix of another. (Non-overlapping alternations like (cat|dog)+ are fine.)
+    if _has_overlapping_alternation(pattern):
+        raise ValueError(
+            "Regex pattern has an overlapping alternation inside a quantifier "
+            "(e.g. (a|aa)+), a catastrophic-backtracking risk; simplify it."
         )
     try:
         return re.compile(pattern, flags)
@@ -167,6 +201,34 @@ def sanitize_dataframe_for_csv(df: pd.DataFrame) -> pd.DataFrame:
         series = out[col]
         if is_string_like(series):
             out[col] = series.map(sanitize_csv_value)
+    return out
+
+
+def ensure_string_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a frame whose column labels are unique strings (copy only if needed).
+
+    CleanFrame keys lineage, the diff, recipes, and fingerprints by *string* column
+    name. Non-string labels (ints, tuples/MultiIndex, ``None``/``NaN``) are coerced
+    with ``str`` so they can't crash ``df[label]`` / ``.astype(str)`` downstream. If
+    that coercion collides — or the frame already carries duplicate labels — a
+    :class:`~cleanframe.errors.CleanFrameError` is raised naming them, because
+    silently de-duplicating columns would itself be undeclared data loss.
+    """
+    cols = list(df.columns)
+    str_cols = [str(c) for c in cols]
+    counts: dict[str, int] = {}
+    for s in str_cols:
+        counts[s] = counts.get(s, 0) + 1
+    dups = sorted(s for s, n in counts.items() if n > 1)
+    if dups:
+        raise CleanFrameError(
+            f"Duplicate column name(s): {dups}. CleanFrame needs unique column names — "
+            "rename or drop the duplicates before cleaning."
+        )
+    if str_cols == cols:
+        return df
+    out = df.copy()
+    out.columns = str_cols
     return out
 
 
@@ -209,6 +271,7 @@ __all__ = [
     "sanitize_csv_value",
     "sanitize_dataframe_for_csv",
     "ensure_parent",
+    "ensure_string_columns",
     "write_text",
     "read_text",
     "is_string_like",

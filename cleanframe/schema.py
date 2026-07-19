@@ -43,6 +43,23 @@ _SEMANTIC_TO_DTYPE = {
 #: How many distinct values a category may have before we stop enumerating them.
 _MAX_ALLOWED_VALUES = 50
 
+#: The logical dtypes a schema column may declare. A typo ("flaot", "emial") would
+#: otherwise be silently ignored (no cast, no warning), so it is rejected at load.
+_VALID_DTYPES = frozenset(
+    {
+        "string", "text", "integer", "int", "float", "number", "boolean", "bool",
+        "date", "datetime", "email", "phone", "url", "category", "id",
+    }
+)
+
+
+def _check_dtype(dtype: str, column: str) -> None:
+    if dtype.strip().lower() not in _VALID_DTYPES:
+        raise SchemaError(
+            f"Schema column {column!r} has unknown dtype {dtype!r}. "
+            f"Valid dtypes: {', '.join(sorted(_VALID_DTYPES))}."
+        )
+
 
 @dataclass
 class SchemaColumn:
@@ -81,9 +98,11 @@ class SchemaColumn:
         if raw is None:
             return cls(name=name)
         if isinstance(raw, str):  # shorthand: `col: float`
+            _check_dtype(raw, name)
             return cls(name=name, dtype=raw)
         if not isinstance(raw, dict):
             raise SchemaError(f"Schema column {name!r} must be a mapping or a dtype string.")
+        _check_dtype(str(raw.get("dtype", "string")), name)
         return cls(
             name=name,
             dtype=str(raw.get("dtype", "string")),

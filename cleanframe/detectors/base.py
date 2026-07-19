@@ -166,8 +166,10 @@ def run_detectors(
     order. Each issue is stamped with its detector name (and column, for column
     detectors) if the detector didn't set them.
     """
+    from .._util import ensure_string_columns
     from ..profile import profile_dataframe  # local import avoids a cycle at module load
 
+    df = ensure_string_columns(df)
     profile = profile or profile_dataframe(df)
     options = options or {}
     only_set = set(only) if only is not None else None

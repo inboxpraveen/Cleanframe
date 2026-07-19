@@ -339,6 +339,9 @@ def profile_column(series: pd.Series, name: str | None = None) -> ColumnProfile:
 
 def profile_dataframe(df: pd.DataFrame) -> DataFrameProfile:
     """Profile every column plus frame-level facts (row count, exact-duplicate rows)."""
+    from ._util import ensure_string_columns
+
+    df = ensure_string_columns(df)
     columns = [profile_column(df[c], name=str(c)) for c in df.columns]
     duplicate_row_count = int(df.duplicated().sum())
     return DataFrameProfile(

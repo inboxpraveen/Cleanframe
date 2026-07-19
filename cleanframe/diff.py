@@ -126,13 +126,41 @@ class CellDiff:
         )
 
     # -- rendering -------------------------------------------------------
-    def render(self, *, max_per_column: int = 8, color: bool | None = None) -> str:
-        """Render a git-diff-style textual summary (also used by ``show``)."""
-        return _render_text(self, max_per_column=max_per_column, color=color)
+    def render(
+        self, *, max_per_column: int = 8, color: bool | None = None, ascii: bool = False
+    ) -> str:
+        """Render a git-diff-style textual summary (also used by ``show``).
 
-    def show(self, *, max_per_column: int = 8, color: bool | None = None) -> None:
-        """Print the diff to stdout, git-diff style."""
-        print(self.render(max_per_column=max_per_column, color=color))
+        Pass ``ascii=True`` to substitute plain ASCII for the ``→``/``∅`` glyphs so
+        the text is safe to print on a non-UTF-8 console (e.g. a cp1252 Windows
+        terminal). :meth:`show` selects this automatically per output stream.
+        """
+        return _render_text(self, max_per_column=max_per_column, color=color, ascii=ascii)
+
+    def show(
+        self,
+        *,
+        max_per_column: int = 8,
+        color: bool | None = None,
+        stream: Any = None,
+        ascii: bool | None = None,
+    ) -> None:
+        """Print the diff, git-diff style. Never crashes on a non-UTF-8 console.
+
+        ``ascii`` defaults to auto: ASCII glyphs are used when the target stream
+        cannot encode ``→``/``∅`` (the default Windows cp1252 console), so library
+        users get clean output without the CLI's stdout reconfiguration.
+        """
+        import sys
+
+        out = stream if stream is not None else sys.stdout
+        if ascii is None:
+            ascii = not _stream_supports_unicode(out)
+        text = self.render(max_per_column=max_per_column, color=color, ascii=ascii)
+        try:
+            print(text, file=out)
+        except UnicodeEncodeError:  # last-resort backstop: force ASCII
+            print(self.render(max_per_column=max_per_column, color=color, ascii=True), file=out)
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         s = self.summary()
@@ -148,6 +176,7 @@ def compute_diff(
     lineage: dict[str, str | None],
     *,
     dropped_rows: list[tuple[int, str]] | None = None,
+    dropped_after: pd.DataFrame | None = None,
     n_rows_before: int | None = None,
     max_changes: int | None = DEFAULT_MAX_DIFF_CHANGES,
 ) -> CellDiff:
@@ -164,6 +193,10 @@ def compute_diff(
         derived/added (no "before" value).
     dropped_rows:
         ``(row_id, reason)`` pairs for rows removed during execution.
+    dropped_after:
+        Post-transform values (indexed by row id) of rows that were later dropped,
+        so a value rewrite applied to a row before it was removed is still tracked
+        as a changed cell (invariant #5) rather than vanishing with the row.
     max_changes:
         Cap on stored :class:`CellChange` entries. ``None`` stores every change
         (can OOM on large dirty frames). Counts in :attr:`CellDiff.changed_cells`
@@ -191,6 +224,10 @@ def compute_diff(
             diff.renamed_columns[source] = out_col
 
         after_series = cleaned[out_col]
+        if dropped_after is not None and out_col in dropped_after.columns:
+            # Append the post-transform values of dropped rows so their edits are
+            # tracked too (the rows still appear separately in dropped_rows).
+            after_series = pd.concat([after_series, dropped_after[out_col]])
         before_series = original[source].reindex(after_series.index)
         changed_mask = _changed_mask(before_series, after_series)
         changed_ids = after_series.index[changed_mask.to_numpy()]
@@ -225,18 +262,31 @@ def compute_diff(
 # ---------------------------------------------------------------------------
 # text rendering
 # ---------------------------------------------------------------------------
-def _fmt(value: Any) -> str:
+def _stream_supports_unicode(stream: Any) -> bool:
+    """True if ``stream`` can encode the diff glyphs (``→``/``∅``/``⚠``)."""
+    enc = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        "→∅⚠".encode(enc)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+def _fmt(value: Any, ascii: bool = False) -> str:
     if _is_na(value):
-        return "∅"
+        return "<NA>" if ascii else "∅"
     if isinstance(value, str):
         return repr(value)
     return str(value)
 
 
-def _render_text(diff: CellDiff, *, max_per_column: int, color: bool | None) -> str:
+def _render_text(
+    diff: CellDiff, *, max_per_column: int, color: bool | None, ascii: bool = False
+) -> str:
     import os
     import sys
 
+    arrow = "->" if ascii else "→"
     if color is None:
         color = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
     red = "\x1b[31m" if color else ""
@@ -254,7 +304,7 @@ def _render_text(diff: CellDiff, *, max_per_column: int, color: bool | None) -> 
         f"{bold}CleanFrame diff{reset}  "
         f"{s['changed_cells']} cell(s) changed in {s['changed_columns']} column(s), "
         f"{s['rows_dropped']} row(s) dropped "
-        f"({s['rows_before']} → {s['rows_after']} rows)"
+        f"({s['rows_before']} {arrow} {s['rows_after']} rows)"
         + (
             f"  {dim}[detail truncated to {s['stored_changes']}]{reset}"
             if s.get("truncated")
@@ -262,7 +312,7 @@ def _render_text(diff: CellDiff, *, max_per_column: int, color: bool | None) -> 
         )
     )
     if diff.renamed_columns:
-        renames = ", ".join(f"{k} → {v}" for k, v in diff.renamed_columns.items())
+        renames = ", ".join(f"{k} {arrow} {v}" for k, v in diff.renamed_columns.items())
         lines.append(f"  {dim}renamed:{reset} {renames}")
     if diff.added_columns:
         lines.append(f"  {green}added columns:{reset} {', '.join(diff.added_columns)}")
@@ -275,8 +325,8 @@ def _render_text(diff: CellDiff, *, max_per_column: int, color: bool | None) -> 
         for change in changes[:max_per_column]:
             lines.append(
                 f"  row {change.row_id}: "
-                f"{red}- {_fmt(change.before)}{reset}  "
-                f"{green}+ {_fmt(change.after)}{reset}"
+                f"{red}- {_fmt(change.before, ascii)}{reset}  "
+                f"{green}+ {_fmt(change.after, ascii)}{reset}"
             )
         if len(changes) > max_per_column:
             lines.append(f"  {dim}… and {len(changes) - max_per_column} more{reset}")

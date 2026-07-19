@@ -135,7 +135,16 @@ def normalize_op(name: str, raw_params: Any = None) -> Op:
     """
     spec = get_op(name)
     if spec.coerce is not None:
-        params = spec.coerce(raw_params)
+        try:
+            params = spec.coerce(raw_params)
+        except RecipeError:
+            raise
+        except (KeyError, ValueError, TypeError) as exc:
+            # A coerce touched a missing/invalid param — surface it as a RecipeError
+            # so the errors.py contract (everything on purpose derives from
+            # CleanFrameError) holds and the CLI shows a tidy message, not a traceback.
+            detail = f"missing key {exc}" if isinstance(exc, KeyError) else str(exc)
+            raise RecipeError(f"Op {name!r} has invalid parameters: {detail}.") from exc
     elif raw_params is None or raw_params == "":
         params = {}
     elif isinstance(raw_params, dict):
@@ -273,6 +282,8 @@ def remove_symbols(series: pd.Series, symbols: list[str] | None = None) -> pd.Se
 def _coerce_replace(raw: Any) -> dict:
     if not isinstance(raw, dict):
         raise RecipeError("Op 'replace' expects a mapping with 'pattern' and 'repl'.")
+    if "pattern" not in raw:
+        raise RecipeError("Op 'replace' requires a 'pattern' parameter.")
     return {
         "pattern": raw["pattern"],
         "repl": raw.get("repl", ""),
@@ -464,6 +475,10 @@ def _coerce_parse_number(raw: Any) -> dict:
     }
 
 
+#: A single, well-formed numeric token: optional sign, int/decimal, optional exponent.
+_NUMBER_TOKEN_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+
+
 def _parse_number_scalar(value: Any, decimal: str, thousands: str, symbols: list[str]) -> float:
     if _is_na(value):
         return np.nan
@@ -480,26 +495,33 @@ def _parse_number_scalar(value: Any, decimal: str, thousands: str, symbols: list
         s = s[1:-1]
     for sym in symbols:
         s = s.replace(sym, "")
-    keep = set("0123456789") | {decimal, thousands, "+", "-"}
-    filtered = "".join(ch for ch in s if ch in keep)
-    if filtered.strip("+-") == "":
-        return np.nan
-    # A minus at the start OR end signals a negative — the latter covers the
-    # accounting/ERP export format "1234.56-".
-    core = filtered.strip("+")
-    if core.startswith("-") or core.endswith("-"):
-        negative = True
-    filtered = filtered.replace(thousands, "")
-    filtered = filtered.replace("+", "").replace("-", "")
+    if thousands:
+        s = s.replace(thousands, "")
     if decimal != ".":
-        filtered = filtered.replace(decimal, ".")
-    if filtered == "" or filtered == ".":
+        s = s.replace(decimal, ".")
+    s = s.strip()
+    # Accounting/ERP trailing minus ("1234.56-") signals a negative.
+    trailing_minus = s.endswith("-")
+    # Extract ONE well-formed numeric token. If any *other* digits remain (e.g.
+    # "12ab34", "10-12"), the string is not a single number — return NaN instead of
+    # silently fusing the disjoint digit groups. Leading/trailing unit text
+    # ("1200 INR") carries no stray digits, so it is still stripped cleanly.
+    m = _NUMBER_TOKEN_RE.search(s)
+    if not m:
+        return np.nan
+    token = m.group(0)
+    leftover = s[: m.start()] + s[m.end() :]
+    if any(ch.isdigit() for ch in leftover):
         return np.nan
     try:
-        result = float(filtered)
+        result = float(token)
     except ValueError:
         return np.nan
-    return -result if negative else result
+    if negative:
+        result = -abs(result)
+    elif trailing_minus and not token.startswith("-"):
+        result = -result
+    return result
 
 
 @register_op(
@@ -525,6 +547,8 @@ def parse_number(
 
 def _coerce_cast(raw: Any) -> dict:
     if isinstance(raw, dict):
+        if "to" not in raw:
+            raise RecipeError("Op 'cast' requires a 'to' target type, e.g. `cast: float`.")
         return {"to": raw["to"]}
     if isinstance(raw, str):
         return {"to": raw}
@@ -540,7 +564,10 @@ def cast(series: pd.Series, to: str) -> pd.Series:
     """Cast a column to ``float``/``int``/``string``/``bool``/``datetime``/``category``.
 
     ``int`` and ``bool`` use pandas' nullable dtypes so missing values survive the
-    cast instead of raising or being coerced to a sentinel.
+    cast instead of raising or being coerced to a sentinel. Note that ``int``
+    *rounds* fractional values using banker's rounding (round-half-to-even, e.g.
+    ``2.5 → 2``, ``1.5 → 2``) rather than truncating toward zero; the change is
+    recorded in the diff. Parse messy numeric strings with ``parse_number`` first.
     """
     to = str(to).lower()
     if to in ("float", "float64", "number"):
@@ -564,7 +591,8 @@ def cast(series: pd.Series, to: str) -> pd.Series:
             return pd.NA
         return series.map(to_bool).astype("boolean")
     if to in ("datetime", "date"):
-        return pd.to_datetime(series, errors="coerce")
+        # Deterministic, order-independent parse (see parse_dates_to_datetime).
+        return parse_dates_to_datetime(series, None)
     if to == "category":
         return series.astype("category")
     raise OpError(f"Unknown cast target {to!r}.")
@@ -604,17 +632,37 @@ def parse_dates_to_datetime(
     yearfirst: bool = False,
 ) -> pd.Series:
     """Parse to a datetime64 Series (NaT where nothing matched). Shared with drift."""
-    if formats:
-        result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
-        remaining = series
-        for fmt in formats:
-            mask = result.isna() & series.notna()
-            if not mask.any():
-                break
-            parsed = pd.to_datetime(remaining[mask], format=fmt, errors="coerce")
-            result.loc[mask] = parsed
-        return result
-    return pd.to_datetime(series, errors="coerce", dayfirst=dayfirst, yearfirst=yearfirst)
+    flex_fallback = False
+    if not formats:
+        # No explicit formats: coalesce over the common formats first — deterministic
+        # and NOT order-dependent, unlike a bare format-less pd.to_datetime which locks
+        # onto the first row's inferred format and silently nulls otherwise-valid dates
+        # (and behaves differently across pandas versions).
+        from .profile import COMMON_DATE_FORMATS
+
+        formats = COMMON_DATE_FORMATS
+        flex_fallback = True
+
+    result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    for fmt in formats:
+        mask = result.isna() & series.notna()
+        if not mask.any():
+            break
+        parsed = pd.to_datetime(series[mask], format=fmt, errors="coerce")
+        result.loc[mask] = parsed
+
+    if flex_fallback:
+        remaining = result.isna() & series.notna()
+        if remaining.any():
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")  # the dayfirst inference warning is expected here
+                flex = pd.to_datetime(
+                    series[remaining], errors="coerce", dayfirst=dayfirst, yearfirst=yearfirst
+                )
+            result.loc[remaining] = flex
+    return result
 
 
 @register_op(

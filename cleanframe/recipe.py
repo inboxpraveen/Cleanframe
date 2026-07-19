@@ -242,7 +242,10 @@ class Recipe:
 
     @classmethod
     def from_yaml(cls, text: str) -> Recipe:
-        data = yaml.safe_load(text)
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise RecipeError(f"Invalid recipe YAML: {exc}") from exc
         return cls.from_dict(data)
 
     @classmethod
@@ -269,7 +272,8 @@ def _lookup_op(name: str, where: str):
 
 
 def _parse_op_entry(entry: Any, scope: str, where: str) -> Op:
-    """Parse one op from the compact YAML form (bare string or single-key mapping)."""
+    """Parse one op from the compact form (bare string, single-key mapping, or the
+    ``[name]`` / ``[name, params]`` array shape some LLMs emit)."""
     if isinstance(entry, str):
         name, value = entry, None
     elif isinstance(entry, dict):
@@ -278,6 +282,10 @@ def _parse_op_entry(entry: Any, scope: str, where: str) -> Op:
                 f"In {where}: each op mapping must have exactly one key, got {sorted(entry)}."
             )
         name, value = next(iter(entry.items()))
+    elif isinstance(entry, (list, tuple)) and 1 <= len(entry) <= 2 and isinstance(entry[0], str):
+        # Lenient: models frequently write ops as ["remove_symbols", [","]] arrays.
+        name = entry[0]
+        value = entry[1] if len(entry) == 2 else None
     else:
         raise RecipeError(f"In {where}: op must be a string or single-key mapping, got {entry!r}.")
 
