@@ -23,11 +23,12 @@ import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-from ._util import ensure_parent, sanitize_dataframe_for_csv
-from .errors import CleanFrameError
+from ._util import check_output_target, sanitize_dataframe_for_csv
+from .errors import CleanFrameError, CleanFrameWarning
 from .executor import execute
 from .recipe import Recipe
 from .types import Mode
@@ -98,8 +99,36 @@ def check_streamable(recipe: Recipe) -> None:
             )
 
 
+def _stream_dtypes(recipe: Recipe):
+    """Column dtypes to pin for a stream, taken from the recipe's fingerprint.
+
+    Chunked reads must pin dtypes or a later chunk can infer a different type from
+    an earlier one. Pinning everything to ``str`` does that but renders numbers
+    differently from a whole-frame replay (``2`` vs ``2.0``), so the fingerprint's
+    recorded types are used when it has them.
+    """
+    fp = recipe.source_fingerprint if isinstance(recipe.source_fingerprint, dict) else {}
+    dtypes = fp.get("dtypes") if isinstance(fp.get("dtypes"), dict) else None
+    if not dtypes:
+        return str
+    pinned: dict[str, Any] = {}
+    for col, dtype in dtypes.items():
+        name = str(dtype).lower()
+        if name.startswith(("int", "uint")):
+            pinned[str(col)] = "Int64"
+        elif name.startswith("float"):
+            pinned[str(col)] = "float64"
+        elif name.startswith("bool"):
+            pinned[str(col)] = "boolean"
+        else:
+            pinned[str(col)] = str
+    return pinned
+
+
 def _stream_read_kwargs(recipe: Recipe, *, pin_dtype: bool) -> dict:
     """Build pandas ``read_csv`` kwargs from ``recipe.read``, matching ``apply_recipe``."""
+    from .dataio import _pandas_skiprows, _text_kwargs
+
     read = dict(recipe.read or {})
     if read.get("sheet") is not None:
         raise CleanFrameError(
@@ -108,19 +137,21 @@ def _stream_read_kwargs(recipe: Recipe, *, pin_dtype: bool) -> dict:
         )
     kwargs: dict = {
         "encoding": read.get("encoding", "utf-8-sig"),
+        "index_col": False,
     }
     if read.get("sep"):
         kwargs["sep"] = read["sep"]
     if read.get("columns") is not None:
         kwargs["usecols"] = list(read["columns"])
-    if read.get("skiprows") is not None:
-        kwargs["skiprows"] = read["skiprows"]
+    skiprows = _pandas_skiprows(read.get("skiprows"), int(read.get("blank_lines") or 0))
+    if skiprows is not None:
+        kwargs["skiprows"] = skiprows
     if read.get("nrows") is not None:
         kwargs["nrows"] = read["nrows"]
-    if pin_dtype:
-        # Pin dtypes for the stream so representation can't drift across chunks.
-        # Drift checks intentionally leave inference on so fingerprints match planning.
-        kwargs["dtype"] = str
+    if read.get("text"):
+        kwargs.update(_text_kwargs())
+    elif pin_dtype:
+        kwargs["dtype"] = _stream_dtypes(recipe)
     return kwargs
 
 
@@ -157,6 +188,7 @@ def stream_apply(
     quarantine_path: str | Path | None = None,
     check_drift: bool = True,
     on_drift: str = "error",
+    overwrite: bool = False,
 ) -> StreamSummary:
     """Replay ``recipe`` over ``in_path`` (CSV) in chunks, writing cleaned CSV to
     ``out_path`` without ever holding the whole file in memory.
@@ -180,8 +212,16 @@ def stream_apply(
         recipe = _resolve_recipe(recipe)
     check_streamable(recipe)
 
+    if isinstance(chunksize, bool) or not isinstance(chunksize, int) or chunksize < 1:
+        raise CleanFrameError(
+            f"chunksize must be a positive number of rows, got {chunksize!r}."
+        )
     in_path = Path(in_path)
-    out_path = ensure_parent(out_path)
+    if not in_path.exists():
+        raise CleanFrameError(f"Input file not found: {in_path}")
+    if not in_path.is_file():
+        raise CleanFrameError(f"Input path is not a file (is it a directory?): {in_path}")
+    out_path = check_output_target(out_path, in_path, overwrite=overwrite)
     suffix = in_path.suffix.lower()
     if suffix not in _CSV_STREAM_SUFFIXES:
         raise CleanFrameError(
@@ -189,13 +229,29 @@ def stream_apply(
             "Use apply_recipe() for Excel/Parquet/JSON."
         )
     mode = Mode.coerce(mode)
+    if on_drift not in ("error", "warn", "ignore"):
+        raise CleanFrameError(
+            f"on_drift must be one of ['error', 'warn', 'ignore'], got {on_drift!r}."
+        )
     head_kwargs = _stream_read_kwargs(recipe, pin_dtype=False)
     read_kwargs = _stream_read_kwargs(recipe, pin_dtype=True)
+    if isinstance(read_kwargs.get("dtype"), dict):
+        try:
+            pd.read_csv(in_path, **{**read_kwargs, "nrows": 5})
+        except Exception:  # noqa: BLE001 - the file no longer matches the recorded types
+            read_kwargs["dtype"] = str
+            warnings.warn(
+                "CleanFrame: the file does not match the column types recorded in the "
+                "recipe; streaming every column as text instead.",
+                CleanFrameWarning,
+                stacklevel=2,
+            )
 
     if check_drift and not recipe.source_fingerprint:
         warnings.warn(
             "CleanFrame: recipe has no source_fingerprint — drift check skipped. "
             "Re-plan or stamp a fingerprint for production replay.",
+            CleanFrameWarning,
             stacklevel=2,
         )
 
@@ -206,12 +262,17 @@ def stream_apply(
         from .errors import DriftError
         from .fingerprint import DEFAULT_SAMPLE_ROWS
 
-        head = pd.read_csv(in_path, nrows=DEFAULT_SAMPLE_ROWS, **head_kwargs)
+        try:
+            head = pd.read_csv(in_path, nrows=DEFAULT_SAMPLE_ROWS, **head_kwargs)
+        except Exception as exc:  # noqa: BLE001 - IO boundary
+            raise CleanFrameError(
+                f"Could not read {in_path.name} to check for drift: {exc}."
+            ) from exc
         drift = detect_drift(head, recipe, source=str(in_path))
         if drift.has_drift and (on_drift == "error" or mode is Mode.STRICT):
             raise DriftError(drift.render(), report=drift)
         if drift.has_drift and on_drift == "warn":
-            warnings.warn("CleanFrame: " + drift.render(), stacklevel=2)
+            warnings.warn("CleanFrame: " + drift.render(), CleanFrameWarning, stacklevel=2)
 
     summary = StreamSummary(out_path=Path(out_path))
     q_path = Path(quarantine_path) if quarantine_path else None

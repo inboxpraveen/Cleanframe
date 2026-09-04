@@ -48,14 +48,20 @@ def _clean(value: str) -> str:
 
 
 def _casing_rank(s: str) -> int:
-    """Prefer nicely-cased spellings when frequencies tie: Title > Mixed > lower > UPPER."""
-    if s.istitle():
+    """Tie-break spellings: short CODE > Title > Mixed > lower > UPPER.
+
+    Short all-caps tokens (``CA``, ``NY``, ``INR``) are codes whose canonical form
+    *is* upper case; anything longer reads better title-cased.
+    """
+    if s.isupper() and len(s.strip()) <= 3:
         return 0
-    if not s.isupper() and not s.islower():
+    if s.istitle():
         return 1
-    if s.islower():
+    if not s.isupper() and not s.islower():
         return 2
-    return 3
+    if s.islower():
+        return 3
+    return 4
 
 
 def _canonical(spellings: dict[str, int]) -> str:
@@ -66,12 +72,32 @@ def _canonical(spellings: dict[str, int]) -> str:
     return sorted(spellings.items(), key=lambda kv: (-kv[1], _casing_rank(kv[0]), kv[0]))[0][0]
 
 
+#: A negated spelling is a different category, however similar it looks.
+_NEGATION_PREFIXES = (
+    "un", "non", "in", "im", "ir", "il", "dis", "de", "re", "anti", "no", "not",
+)
+
+
+def _is_negation_pair(a: str, b: str) -> bool:
+    """True when one spelling is the other plus a negation/repetition prefix."""
+    x, y = normalize_key(a), normalize_key(b)
+    if x == y:
+        return False
+    longer, shorter = (x, y) if len(x) > len(y) else (y, x)
+    if not shorter or not longer.endswith(shorter):
+        return False
+    return longer[: -len(shorter)] in _NEGATION_PREFIXES
+
+
 def _cluster(counts: dict[str, int], seed_map: dict[str, str] | None) -> dict[str, str]:
     """Return a mapping ``{variant: canonical}`` covering only values that change."""
     # 1) group by aggressive normalisation key
     groups: dict[str, dict[str, int]] = {}
     for value, n in counts.items():
-        groups.setdefault(normalize_key(value), {})[value] = n
+        key = normalize_key(value)
+        if not key:
+            continue  # punctuation-only values ("-", "?") are not category variants
+        groups.setdefault(key, {})[value] = n
 
     canon_of_group = {key: _canonical(spellings) for key, spellings in groups.items()}
 
@@ -90,6 +116,8 @@ def _cluster(counts: dict[str, int], seed_map: dict[str, str] | None) -> dict[st
             # spelling AND rare relative to it — otherwise two distinct, comparably
             # frequent categories would be silently merged (semantic inversion).
             rep_count = sum(groups[rep].values())
+            if _is_negation_pair(canon, canon_of_group[rep]):
+                continue
             if (
                 similarity(canon, canon_of_group[rep]) >= _FUZZY_THRESHOLD
                 and key_count <= rep_count * _FUZZY_MERGE_MAX_RATIO

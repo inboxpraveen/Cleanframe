@@ -31,7 +31,7 @@ from typing import Any, Protocol
 import pandas as pd
 
 from ._util import DETECTOR_SAMPLE_CAP, sample_non_null
-from .errors import BudgetExceeded, LLMError
+from .errors import BudgetExceeded, CleanFrameWarning, LLMError
 from .issues import Issues
 from .ops import list_ops
 from .profile import DataFrameProfile
@@ -77,7 +77,7 @@ class AnthropicClient:
         try:
             import anthropic
         except ImportError as exc:  # pragma: no cover - optional dep
-            raise LLMError("The 'anthropic' package is required. Install cleanframe[llm].") from exc
+            raise LLMError("The 'anthropic' package is required. Install cleanframe-engine[llm].") from exc
         client = anthropic.Anthropic(api_key=self._api_key, timeout=LLM_HTTP_TIMEOUT)
         msg = client.messages.create(
             model=self.model,
@@ -126,7 +126,7 @@ class OpenAIClient:
         try:
             import openai
         except ImportError as exc:  # pragma: no cover - optional dep
-            raise LLMError("The 'openai' package is required. Install cleanframe[llm].") from exc
+            raise LLMError("The 'openai' package is required. Install cleanframe-engine[llm].") from exc
         kwargs: dict[str, Any] = {"api_key": self._api_key, "timeout": LLM_HTTP_TIMEOUT}
         if self._base_url:
             kwargs["base_url"] = self._base_url
@@ -295,6 +295,10 @@ def get_client(spec: str) -> LLMClient:
     uses a native adapter. Unknown providers raise :class:`LLMError` listing the
     supported names.
     """
+    if not isinstance(spec, str):
+        raise LLMError(
+            f"LLM spec must be a 'provider/model' string, got {type(spec).__name__}."
+        )
     if "/" not in spec:
         raise LLMError(f"LLM spec must be 'provider/model', got {spec!r}.")
     provider, model = spec.split("/", 1)
@@ -531,18 +535,116 @@ def _finalize_llm_recipe(recipe: Recipe, *, mode: Mode) -> Recipe:
     elif mode is Mode.AUTO:
         blocked = set(_LLM_BLOCKED_AUTO)
 
+    removed: list[str] = []
     for col in recipe.columns:
         ops = [op for op in col.ops if op.name not in blocked]
+        removed += [f"{op.name} on {col.source}" for op in col.ops if op.name in blocked]
         col.ops = _finalize_ops(ops)
+    removed += [op.name for op in recipe.frame_ops if op.name in blocked]
     recipe.frame_ops = [op for op in recipe.frame_ops if op.name not in blocked]
+    if removed:
+        recipe.meta["llm_blocked_ops"] = removed
     return recipe
+
+
+def _sanitize_llm_recipe(data: Any) -> list[str]:
+    """Drop model-written steps a recipe cannot load, returning what was dropped.
+
+    A hand-written recipe fails loud on a misspelled parameter — that is the point.
+    Model output is different: one stray parameter would throw away an otherwise
+    good plan, so the bad step is removed and reported instead. The result still
+    goes through :meth:`Recipe.from_dict`, so nothing unvalidated reaches the data.
+    """
+    from .errors import CleanFrameError
+    from .ops import OP_REGISTRY, normalize_op
+    from .recipe import _fuse_scalar_arguments
+
+    dropped: list[str] = []
+    if not isinstance(data, dict):
+        return dropped
+
+    def clean_entry(entry: Any, where: str, scope: str) -> Any:
+        if isinstance(entry, str):
+            name, value = entry, None
+        elif isinstance(entry, dict) and len(entry) == 1:
+            name, value = next(iter(entry.items()))
+        elif (
+            isinstance(entry, (list, tuple))
+            and 1 <= len(entry) <= 2
+            and isinstance(entry[0], str)
+        ):
+            name = entry[0]
+            value = entry[1] if len(entry) == 2 else None
+        else:
+            dropped.append(f"{where}: unrecognised op {entry!r}")
+            return None
+        spec = OP_REGISTRY.get(str(name))
+        if spec is None or spec.scope != scope:
+            dropped.append(f"{where}: unusable op {name!r}")
+            return None
+        if isinstance(value, dict) and not spec.free_form and spec.known_params:
+            unknown = sorted(str(k) for k in value if str(k) not in spec.known_params)
+            if unknown:
+                value = {k: v for k, v in value.items() if str(k) not in unknown}
+                dropped.append(f"{where}: {name} parameter(s) {unknown}")
+        try:
+            normalize_op(str(name), value)
+        except CleanFrameError as exc:
+            dropped.append(f"{where}: {name} ({exc})")
+            return None
+        return name if value is None or value == {} else {name: value}
+
+    columns = data.get("columns")
+    if isinstance(columns, dict):
+        for column, spec in list(columns.items()):
+            if not isinstance(spec, dict):
+                continue
+            rename = spec.get("rename_to")
+            if rename is not None and (not isinstance(rename, str) or not rename.strip()):
+                dropped.append(f"column {column!r}: rename_to {rename!r}")
+                spec.pop("rename_to")
+            raw_ops = spec.get("ops")
+            if isinstance(raw_ops, (list, tuple)):
+                kept = [
+                    cleaned
+                    for entry in _fuse_scalar_arguments(list(raw_ops))
+                    if (cleaned := clean_entry(entry, f"column {column!r}", "column"))
+                    is not None
+                ]
+                spec["ops"] = kept
+
+    raw_frame_ops = data.get("frame_ops")
+    if isinstance(raw_frame_ops, (list, tuple)):
+        data["frame_ops"] = [
+            cleaned
+            for entry in _fuse_scalar_arguments(list(raw_frame_ops))
+            if (cleaned := clean_entry(entry, "frame_ops", "frame")) is not None
+        ]
+
+    rules = data.get("validate")
+    if isinstance(rules, (list, tuple)):
+        from .recipe import ValidationRule
+
+        kept_rules = []
+        for rule in rules:
+            try:
+                ValidationRule.from_dict(rule)
+            except CleanFrameError as exc:
+                dropped.append(f"validation {rule!r} ({exc})")
+                continue
+            kept_rules.append(rule)
+        data["validate"] = kept_rules
+
+    return dropped
 
 
 def parse_recipe_json(text: str) -> Recipe:
     """Extract and validate a Recipe from the model's response.
 
     Validation runs through :meth:`Recipe.from_dict`, so an unknown op or malformed
-    structure raises before anything touches data.
+    structure never reaches the data. Steps the model wrote that cannot load are
+    dropped and listed in ``recipe.meta["llm_dropped"]`` rather than discarding the
+    whole plan.
     """
     text = text.strip()
     if text.startswith("```"):
@@ -553,14 +655,18 @@ def parse_recipe_json(text: str) -> Recipe:
         data = json.loads(blob)
     except json.JSONDecodeError as exc:
         raise LLMError(f"LLM returned invalid JSON: {exc}") from exc
+    dropped = _sanitize_llm_recipe(data)
     try:
-        return Recipe.from_dict(data)
+        recipe = Recipe.from_dict(data)
     except LLMError:
         raise
     except Exception as exc:  # noqa: BLE001 - any validation failure => a clean LLMError
         # Wrap RecipeError and any stray KeyError/TypeError from a malformed model
         # recipe so the caller only ever sees LLMError (and the planner falls back).
         raise LLMError(f"LLM produced an invalid recipe: {exc}") from exc
+    if dropped:
+        recipe.meta["llm_dropped"] = dropped
+    return recipe
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +708,18 @@ class LLMPlanner:
         from .fingerprint import fingerprint_dataframe
 
         mode = Mode.coerce(mode)
+        if self.exposure is LLMExposure.NONE:
+            warnings.warn(
+                "CleanFrame: exposure='none' keeps everything local, so no request was "
+                "made — planning with deterministic rules instead.",
+                CleanFrameWarning,
+                stacklevel=2,
+            )
+            recipe = self._fallback().plan(
+                df, profile, issues, schema=schema, mode=mode, options=options
+            )
+            recipe.meta["llm_exposure"] = "none"
+            return recipe
         try:
             recipe = self._plan_via_llm(df, profile, issues, schema, mode=mode)
         except Exception as exc:  # noqa: BLE001
@@ -611,10 +729,13 @@ class LLMPlanner:
             # not just LLMError/BudgetExceeded. (KeyboardInterrupt/SystemExit are
             # BaseException and correctly propagate.)
             if self.fallback is None:
-                raise
+                if isinstance(exc, LLMError):
+                    raise
+                raise LLMError(f"LLM planning failed: {exc}") from exc
             warnings.warn(
                 f"CleanFrame: LLM planning failed ({exc}); falling back to rules planner. "
                 "Inspect recipe.meta['llm_fallback'] for details.",
+                CleanFrameWarning,
                 stacklevel=2,
             )
             recipe = self._fallback().plan(
@@ -642,17 +763,30 @@ class LLMPlanner:
                     f"Estimated {estimate} tokens exceeds max_tokens_budget={self.max_tokens_budget}."
                 )
         response = self.client.complete(system, user, max_tokens=self.max_output_tokens)
-        self.last_response = response
+        self.last_response = response  # noqa: RUF100
         if self.max_tokens_budget is not None and response.total_tokens > self.max_tokens_budget:
             raise BudgetExceeded(
                 f"Used {response.total_tokens} tokens, over max_tokens_budget={self.max_tokens_budget}."
             )
-        return _finalize_llm_recipe(parse_recipe_json(response.text), mode=mode)
+        recipe = _finalize_llm_recipe(parse_recipe_json(response.text), mode=mode)
+        dropped = recipe.meta.get("llm_dropped")
+        if dropped:
+            warnings.warn(
+                f"CleanFrame: {len(dropped)} step(s) the model wrote could not be used and "
+                f"were dropped ({'; '.join(dropped[:3])}"
+                + (", …)" if len(dropped) > 3 else ")")
+                + ". See recipe.meta['llm_dropped'].",
+                CleanFrameWarning,
+                stacklevel=2,
+            )
+        return recipe
 
     def _fallback(self):
         from .planner import RulesPlanner
 
-        return RulesPlanner() if self.fallback in ("rules", True) else self.fallback
+        if self.fallback is None or self.fallback in ("rules", True):
+            return RulesPlanner()
+        return self.fallback
 
 
 def _estimate_tokens(text: str) -> int:

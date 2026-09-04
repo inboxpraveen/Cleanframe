@@ -14,6 +14,8 @@ refuses to overwrite the source file in place unless ``overwrite=True``.
 
 from __future__ import annotations
 
+import os
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,10 +23,10 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from ._util import ensure_parent, read_text, write_text
+from ._util import ensure_parent, load_yaml, read_text, write_text
 from ._version import __version__
 from .dataio import excel_sheet_names
-from .errors import CleanFrameError, RecipeError
+from .errors import CleanFrameError, CleanFrameWarning, RecipeError
 from .recipe import Recipe
 from .result import CleanResult
 
@@ -72,7 +74,9 @@ class WorkbookRecipe:
         path = Path(path)
         if not path.exists():
             raise RecipeError(f"Recipe not found: {path}")
-        return cls.from_dict(yaml.safe_load(read_text(path)))
+        if path.is_dir():
+            raise RecipeError(f"Recipe path is a directory, not a file: {path}")
+        return cls.from_dict(load_yaml(read_text(path), error=RecipeError, what="recipe"))
 
 
 def load_recipe(path: str | Path) -> Recipe | WorkbookRecipe:
@@ -81,7 +85,9 @@ def load_recipe(path: str | Path) -> Recipe | WorkbookRecipe:
     path = Path(path)
     if not path.exists():
         raise RecipeError(f"Recipe not found: {path}")
-    data = yaml.safe_load(read_text(path))
+    if path.is_dir():
+        raise RecipeError(f"Recipe path is a directory, not a file: {path}")
+    data = load_yaml(read_text(path), error=RecipeError, what="recipe")
     if isinstance(data, dict) and "sheets" in data:
         return WorkbookRecipe.from_dict(data)
     return Recipe.from_dict(data)
@@ -137,9 +143,10 @@ class WorkbookResult:
         from ._util import sanitize_dataframe_for_spreadsheet
 
         ensure_parent(path)
+        tmp = path.with_name(path.name + ".cf-tmp")
         used_sheet_names: dict[str, str] = {}
         try:
-            with pd.ExcelWriter(path) as xl:
+            with pd.ExcelWriter(tmp, engine="openpyxl") as xl:
                 for name in self.sheet_order:
                     if name in self.sheets:
                         frame = sanitize_dataframe_for_spreadsheet(self.sheets[name].dataframe)
@@ -156,10 +163,15 @@ class WorkbookResult:
                         )
                     used_sheet_names[sheet_name] = name
                     frame.to_excel(xl, sheet_name=sheet_name, index=False)
+            os.replace(tmp, path)
         except ImportError as exc:  # pragma: no cover
+            tmp.unlink(missing_ok=True)
             raise CleanFrameError(
-                "Writing .xlsx requires openpyxl. Try `pip install cleanframe[excel]`."
+                "Writing .xlsx requires openpyxl. Try `pip install cleanframe-engine[excel]`."
             ) from exc
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
         return path
 
     def summary(self) -> str:
@@ -179,30 +191,81 @@ class WorkbookResult:
 # ---------------------------------------------------------------------------
 # Reading + cleaning + applying
 # ---------------------------------------------------------------------------
-def read_workbook(path: str | Path, sheets: list[str] | None = None) -> dict[str, pd.DataFrame]:
-    """Read all (or the named) sheets of a workbook into an ordered dict."""
+def _sheet_selection(sheets: Any) -> list[str] | None:
+    if sheets is None:
+        return None
+    if isinstance(sheets, str):
+        raise CleanFrameError(
+            f"sheets= must be a list of sheet names, not the single string {sheets!r} "
+            "(a string would be read one character at a time)."
+        )
+    return [str(s) for s in sheets]
+
+
+def read_workbook(
+    path: str | Path, sheets: list[str] | None = None, *, text: bool = False
+) -> dict[str, pd.DataFrame]:
+    """Read all (or the named) sheets of a workbook into an ordered dict.
+
+    ``text=True`` reads every cell verbatim. Otherwise pandas' type inference is
+    compared against a bounded verbatim read and anything it changed is reported,
+    because that happens before any recipe runs and no diff can show it.
+    """
     path = Path(path)
+    selected = _sheet_selection(sheets)
     names = excel_sheet_names(path)
-    want = list(sheets) if sheets else names
+    want = selected if selected else names
     missing = [s for s in want if s not in names]
     if missing:
         raise CleanFrameError(f"Sheet(s) {missing} not found in {path.name} (has {names}).")
     try:
-        data = pd.read_excel(path, sheet_name=want)
+        from .dataio import _text_kwargs
+
+        data = pd.read_excel(path, sheet_name=want, **(_text_kwargs() if text else {}))
     except Exception as exc:  # noqa: BLE001
         raise CleanFrameError(f"Could not read workbook {path.name}: {exc}.") from exc
     if not isinstance(data, dict):  # single sheet requested as a bare name
         data = {want[0]: data}
-    return {name: data[name] for name in want}
+    frames = {name: data[name] for name in want}
+    if not text:
+        _warn_workbook_losses(path, want, frames)
+    return frames
 
 
-def _load_all_sheets(data: str | Path | dict) -> tuple[dict[str, pd.DataFrame], list[str], str | None]:
+def _warn_workbook_losses(
+    path: Path, want: list[str], frames: dict[str, pd.DataFrame], limit: int = 200
+) -> None:
+    from .dataio import _text_kwargs, compare_for_losses
+
+    try:
+        verbatim = pd.read_excel(path, sheet_name=want, nrows=limit, **_text_kwargs())
+    except Exception:  # noqa: BLE001 - the advisory is never worth failing over
+        return
+    if not isinstance(verbatim, dict):
+        verbatim = {want[0]: verbatim}
+    notes: list[str] = []
+    for name in want:
+        losses = compare_for_losses(frames[name], verbatim.get(name, pd.DataFrame()))
+        notes += [f"{name}.{col}: {why}" for col, why in sorted(losses.items())]
+    if notes:
+        warnings.warn(
+            "CleanFrame: pandas type inference changed values while reading "
+            f"{path.name} ({'; '.join(notes)}). Pass text=True to read every cell "
+            "verbatim.",
+            CleanFrameWarning,
+            stacklevel=3,
+        )
+
+
+def _load_all_sheets(
+    data: str | Path | dict, *, text: bool = False
+) -> tuple[dict[str, pd.DataFrame], list[str], str | None]:
     if isinstance(data, dict):
         frames = {str(k): v for k, v in data.items()}
         return frames, list(frames), None
     path = Path(data)
     order = excel_sheet_names(path)
-    frames = read_workbook(path, order)
+    frames = read_workbook(path, order, text=text)
     return frames, order, str(path)
 
 
@@ -215,16 +278,19 @@ def clean_workbook(
     llm: Any = None,
     mode: Any = "review",
     options: dict[str, Any] | None = None,
+    text: bool = False,
     **clean_kwargs: Any,
 ) -> WorkbookResult:
     """Clean every sheet of a workbook independently and return a :class:`WorkbookResult`.
 
     ``sheets`` limits which tabs are cleaned; the rest are kept verbatim for write-back.
+    ``text=True`` reads every cell of every sheet verbatim and records that in each
+    sheet's recipe, so :func:`apply_workbook` replays the same read.
     """
     from .api import clean
 
-    frames, order, source = _load_all_sheets(data)
-    selected = list(sheets) if sheets else order
+    frames, order, source = _load_all_sheets(data, text=text)
+    selected = _sheet_selection(sheets) or order
     missing = [s for s in selected if s not in frames]
     if missing:
         raise CleanFrameError(f"Sheet(s) {missing} not found (have {order}).")
@@ -241,6 +307,7 @@ def clean_workbook(
                 llm=llm,
                 mode=mode,
                 options=options,
+                text=text,
                 source=f"{source}#{name}" if source else name,
                 **clean_kwargs,
             )
@@ -261,7 +328,10 @@ def apply_workbook(
     from .api import apply_recipe
 
     wr = _resolve_workbook_recipe(recipe)
-    frames, order, source = _load_all_sheets(data)
+    # Replay the read the recipes were planned with, or a verbatim sheet becomes a
+    # type-inferred one and the values stop matching.
+    text = any(bool((r.read or {}).get("text")) for r in wr.sheets.values())
+    frames, order, source = _load_all_sheets(data, text=text)
     results: dict[str, CleanResult] = {}
     untouched: dict[str, pd.DataFrame] = {}
     for name in order:

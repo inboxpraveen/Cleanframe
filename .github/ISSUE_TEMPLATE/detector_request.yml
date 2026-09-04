@@ -1,0 +1,28 @@
+name: Detector or op request
+description: A kind of messy data CleanFrame should recognise or fix.
+labels: [enhancement, good-first-detector]
+body:
+  - type: textarea
+    id: data
+    attributes:
+      label: Example values
+      description: A handful of realistic (redacted) values, and what they should become.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: rule
+    attributes:
+      label: The rule
+      description: |
+        How would you decide this deterministically? Note anything that is domain
+        knowledge rather than a rule — those belong to a human or the LLM planner.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: The fix is reversible and cannot lose information.
+        - label: I have read the invariants in CONTRIBUTING.md.

@@ -11,7 +11,7 @@ under [`../wiki/`](../wiki/).
 | [Concepts](concepts.md) | Recipes, modes, quarantine, drift, lineage |
 | [CLI reference](cli.md) | Every `cleanframe` subcommand |
 | [Python API](api-reference.md) | `clean`, `report`, `apply_recipe`, … |
-| [Recipe specification](recipe-spec.md) | YAML format v1, every op |
+| [Recipe specification](recipe-spec.md) | YAML format v1/v2, every op |
 | [Schema specification](schema-spec.md) | Target schemas and constraints |
 | [Detectors & ops](detectors-and-ops.md) | Built-in inventory + plugin hooks |
 | [LLM planning](llm.md) | Providers, exposure modes, budgets |

@@ -23,10 +23,17 @@ from .ops import CURRENCY_SYMBOLS, parse_unit_scalar
 
 PATTERN_SAMPLE_CAP = 5000
 
+#: Values longer than this are never dates/currency/phones/numbers, and scanning
+#: them with the pattern regexes costs O(len^2) — a single long note or JSON blob
+#: would otherwise stall profiling for minutes.
+_MAX_PATTERN_VALUE_LEN = 200
+
 # -- reusable patterns -------------------------------------------------------
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 URL_RE = re.compile(r"^(https?://|www\.)\S+$", re.IGNORECASE)
 _DATEISH_RE = re.compile(r"[/.\-]|\d{1,2}\s*[A-Za-z]{3,}|[A-Za-z]{3,}\s*\d{1,2}")
+#: Clock times and ISO dates are not phone numbers, however many digits they hold.
+_TIMESTAMPISH_RE = re.compile(r"\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}")
 _DIGIT_RE = re.compile(r"\d")
 _BOOL_TOKENS = {"true", "false", "yes", "no", "t", "f", "y", "n"}
 
@@ -146,6 +153,8 @@ def _frac(matches: int, total: int) -> float:
 
 
 def _looks_date(value: str) -> bool:
+    if len(value) > _MAX_PATTERN_VALUE_LEN:
+        return False
     return bool(_DATEISH_RE.search(value)) and bool(_DIGIT_RE.search(value))
 
 
@@ -166,6 +175,8 @@ def _matching_dates(values: list[str]) -> list[str]:
 
 
 def _looks_currency(value: str) -> bool:
+    if len(value) > _MAX_PATTERN_VALUE_LEN:
+        return False
     has_symbol = any(sym in value for sym in CURRENCY_SYMBOLS)
     up = value.upper()
     has_code = any(f" {c}" in f" {up} " or up.strip().endswith(c) or up.strip().startswith(c)
@@ -174,10 +185,14 @@ def _looks_currency(value: str) -> bool:
 
 
 def _looks_unit(value: str) -> bool:
+    if len(value) > _MAX_PATTERN_VALUE_LEN:
+        return False
     return parse_unit_scalar(value) is not None
 
 
 def _looks_phone(value: str) -> bool:
+    if len(value) > _MAX_PATTERN_VALUE_LEN or _TIMESTAMPISH_RE.search(value):
+        return False
     digits = re.sub(r"\D", "", value)
     if not (7 <= len(digits) <= 15):
         return False
@@ -197,6 +212,8 @@ def _is_strict_numeric(value: str) -> bool:
     non-digit and would turn an id like ``"U001"`` into ``1``. Here a stray letter
     disqualifies the value, so alphanumeric ids are not mistaken for numbers.
     """
+    if len(value) > _MAX_PATTERN_VALUE_LEN:
+        return False
     s = value.strip()
     if s.startswith("(") and s.endswith(")"):
         s = s[1:-1]
@@ -243,13 +260,17 @@ def _infer_semantic_type(
     def _wfrac(pred) -> float:
         return sum(vcounts[v] for v in distinct if pred(v)) / total
 
-    frac_bool = _wfrac(lambda v: v.strip().casefold() in _BOOL_TOKENS)
-    frac_email = _wfrac(lambda v: bool(EMAIL_RE.match(v.strip())))
-    frac_url = _wfrac(lambda v: bool(URL_RE.match(v.strip())))
+    def _short(v: str) -> bool:
+        return len(v) <= _MAX_PATTERN_VALUE_LEN
+
+    frac_bool = _wfrac(lambda v: _short(v) and v.strip().casefold() in _BOOL_TOKENS)
+    frac_email = _wfrac(lambda v: _short(v) and bool(EMAIL_RE.match(v.strip())))
+    frac_url = _wfrac(lambda v: _short(v) and bool(URL_RE.match(v.strip())))
     frac_currency = _wfrac(_looks_currency)
     frac_unit = _wfrac(_looks_unit)
     frac_phone = _wfrac(_looks_phone)
     frac_date = sum(vcounts[v] for v in _matching_dates(distinct)) / total
+    frac_dial_prefix = _wfrac(lambda v: v.strip().startswith(("+", "(")))
     numeric_distinct = [v for v in distinct if _is_strict_numeric(v)]
     frac_numeric = sum(vcounts[v] for v in numeric_distinct) / total
     numeric_has_decimal = any("." in v for v in numeric_distinct)
@@ -258,6 +279,7 @@ def _infer_semantic_type(
         bool=round(frac_bool, 3), email=round(frac_email, 3), url=round(frac_url, 3),
         currency=round(frac_currency, 3), unit=round(frac_unit, 3),
         date=round(frac_date, 3), phone=round(frac_phone, 3), numeric=round(frac_numeric, 3),
+        dial_prefix=round(frac_dial_prefix, 3),
     )
 
     uniq_frac = unique_count / count
@@ -276,8 +298,13 @@ def _infer_semantic_type(
         return "unit", max(frac_unit, 0.8 if _name_hint(name, "unit") else frac_unit), signals
     if frac_date >= 0.8 or (frac_date >= 0.5 and _name_hint(name, "date")):
         return "date", max(frac_date, 0.8 if _name_hint(name, "date") else frac_date), signals
-    if frac_phone >= 0.8 or (frac_phone >= 0.5 and _name_hint(name, "phone")):
-        return "phone", max(frac_phone, 0.8 if _name_hint(name, "phone") else frac_phone), signals
+    if _name_hint(name, "phone"):
+        if frac_phone >= 0.5:
+            return "phone", max(frac_phone, 0.8), signals
+    elif frac_phone >= 0.8 and frac_dial_prefix >= 0.5:
+        # Without a phone-ish column name, only an explicit dial prefix is evidence:
+        # timestamps and dashed ids otherwise look identical to a local number.
+        return "phone", frac_phone, signals
     if frac_numeric >= 0.95:
         return ("float" if numeric_has_decimal else "integer"), frac_numeric, signals
     if unique_count <= 50 and uniq_frac < 0.5:
@@ -290,7 +317,10 @@ def _infer_semantic_type(
 def _value_counts_stable(series: pd.Series, top: int = 10) -> list[tuple[Any, int]]:
     import heapq
 
-    vc = series.dropna().value_counts()
+    try:
+        vc = series.dropna().value_counts()
+    except TypeError:  # unhashable cells (lists/dicts) have no value counts
+        return []
     # Deterministic tie-break: count desc, then string of value asc. heapq.nsmallest
     # is sorted(...)[:top] without materialising/sorting every unique value, which
     # matters on high-cardinality columns (millions of near-unique values).
@@ -304,11 +334,17 @@ def profile_column(series: pd.Series, name: str | None = None) -> ColumnProfile:
     null_count = int(series.isna().sum())
     count = n - null_count
     non_null = series.dropna()
-    unique_count = int(non_null.nunique())
+    try:
+        unique_count = int(non_null.nunique())
+    except TypeError:  # unhashable cells (lists/dicts/sets) — compare by repr
+        unique_count = int(non_null.map(repr).nunique())
 
     semantic_type, confidence, signals = _infer_semantic_type(name, series, count, unique_count)
 
-    sample_values = non_null.drop_duplicates().head(5).tolist()
+    try:
+        sample_values = non_null.drop_duplicates().head(5).tolist()
+    except TypeError:
+        sample_values = non_null.head(5).tolist()
     most_common = _value_counts_stable(series)
 
     numeric_stats = None
@@ -322,12 +358,14 @@ def profile_column(series: pd.Series, name: str | None = None) -> ColumnProfile:
 
     str_len_stats = None
     if semantic_type in ("text", "categorical", "id") and count:
-        lengths = non_null.map(lambda v: len(v) if isinstance(v, str) else len(str(v)))
-        if len(lengths):
+        # Bounded sample: a categorical column cannot be mapped elementwise, and a
+        # million-row text column should not be materialised just for three numbers.
+        lengths = [len(v) for v in _str_sample(series)]
+        if lengths:
             str_len_stats = {
-                "min": float(lengths.min()),
-                "max": float(lengths.max()),
-                "mean": float(lengths.mean()),
+                "min": float(min(lengths)),
+                "max": float(max(lengths)),
+                "mean": float(sum(lengths) / len(lengths)),
             }
 
     return ColumnProfile(
@@ -352,7 +390,10 @@ def profile_dataframe(df: pd.DataFrame) -> DataFrameProfile:
 
     df = ensure_string_columns(df)
     columns = [profile_column(df[c], name=str(c)) for c in df.columns]
-    duplicate_row_count = int(df.duplicated().sum())
+    try:
+        duplicate_row_count = int(df.duplicated().sum())
+    except TypeError:  # unhashable cells cannot be compared row-wise
+        duplicate_row_count = 0
     return DataFrameProfile(
         n_rows=int(len(df)),
         n_columns=int(df.shape[1]),

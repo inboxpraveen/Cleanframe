@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from ._util import best_match, canonicalize_dtype, similarity
+from .errors import CleanFrameError
 from .fingerprint import DEFAULT_SAMPLE_ROWS, fingerprint_dataframe
 from .llm import _sketch
 from .ops import parse_dates_to_datetime
@@ -78,12 +79,24 @@ def detect_drift(df: pd.DataFrame, recipe: Recipe, *, source: str | None = None)
     """Compare an incoming frame against the expectations baked into ``recipe``."""
     report = DriftReport(source=source)
     fp = recipe.source_fingerprint or {}
-    expected_cols: list[str] = list(fp.get("column_names", []))
-    expected_dtypes: dict[str, str] = dict(fp.get("dtypes", {}))
+    if not isinstance(fp, dict):
+        raise CleanFrameError(
+            f"recipe source_fingerprint must be a mapping, got {type(fp).__name__}."
+        )
+    raw_cols = fp.get("column_names") or []
+    if not isinstance(raw_cols, (list, tuple)):
+        raise CleanFrameError("recipe source_fingerprint.column_names must be a list.")
+    raw_dtypes = fp.get("dtypes") or {}
+    if not isinstance(raw_dtypes, dict):
+        raise CleanFrameError("recipe source_fingerprint.dtypes must be a mapping.")
+    expected_cols: list[str] = [str(c) for c in raw_cols]
+    expected_dtypes: dict[str, str] = {str(k): str(v) for k, v in raw_dtypes.items()}
     actual_cols = [str(c) for c in df.columns]
 
-    missing = [c for c in expected_cols if c not in actual_cols]
-    new = [c for c in actual_cols if c not in expected_cols]
+    # A fingerprint without column names (hand-written recipe) says nothing about
+    # structure; comparing against an empty list would call every column new.
+    missing = [c for c in expected_cols if c not in actual_cols] if expected_cols else []
+    new = [c for c in actual_cols if c not in expected_cols] if expected_cols else []
 
     # -- new columns: try to explain each as a rename ------------------
     for col in new:
@@ -168,12 +181,19 @@ def _detect_content_drift(df: pd.DataFrame, fp: dict, report: DriftReport) -> No
     if expected_rows is None and expected_hash is None:
         return
 
-    sample_rows = int(fp.get("sampled_rows") or DEFAULT_SAMPLE_ROWS)
+    try:
+        sample_rows = int(fp.get("sampled_rows") or DEFAULT_SAMPLE_ROWS)
+    except (TypeError, ValueError):
+        sample_rows = DEFAULT_SAMPLE_ROWS
     actual_fp = fingerprint_dataframe(df, sample_rows=sample_rows)
     actual_rows = actual_fp["row_count"]
     actual_hash = actual_fp["hash_sample"]
 
-    rows_changed = expected_rows is not None and int(expected_rows) != int(actual_rows)
+    try:
+        rows_changed = expected_rows is not None and int(expected_rows) != int(actual_rows)
+    except (TypeError, ValueError):
+        rows_changed = False
+        expected_rows = None
     hash_changed = expected_hash is not None and str(expected_hash) != str(actual_hash)
 
     if rows_changed:
@@ -182,12 +202,12 @@ def _detect_content_drift(df: pd.DataFrame, fp: dict, report: DriftReport) -> No
                 kind="row_count_change",
                 message=f"Row count changed ({expected_rows} → {actual_rows})",
                 severity=Severity.INFO,
-                evidence={"was": int(expected_rows), "now": int(actual_rows)},
+                evidence={"was": int(expected_rows), "now": int(actual_rows)},  # type: ignore[arg-type]
             )
         )
 
     if hash_changed:
-        same_n = expected_rows is not None and int(expected_rows) == int(actual_rows)
+        same_n = bool(expected_rows is not None and int(expected_rows) == int(actual_rows))
         report.findings.append(
             DriftFinding(
                 kind="content_hash_change",

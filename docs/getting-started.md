@@ -9,19 +9,20 @@ schema-drift alerts when next month's file changes shape.
 ## Install
 
 ```bash
-pip install cleanframe
+pip install cleanframe-engine
 ```
 
 Optional extras:
 
 ```bash
-pip install "cleanframe[excel]"     # .xlsx
-pip install "cleanframe[parquet]"   # .parquet (pyarrow)
-pip install "cleanframe[llm]"       # Anthropic + OpenAI SDKs
-pip install "cleanframe[all]"       # everything
+pip install "cleanframe-engine[excel]"     # .xlsx / .xlsm
+pip install "cleanframe-engine[parquet]"   # .parquet (pyarrow)
+pip install "cleanframe-engine[llm]"       # Anthropic + OpenAI SDKs
+pip install "cleanframe-engine[all]"       # everything
 ```
 
-Requires **Python 3.10+**.
+Requires **Python 3.10+**. The distribution is `cleanframe-engine`; the import
+package is `cleanframe` (`import cleanframe as cf`).
 
 ## 30-second CLI demo
 
@@ -31,8 +32,10 @@ From a clone of this repo (or any CSV):
 cleanframe report examples/messy_customers.csv
 ```
 
-Opens nothing automatically — it prints a path to an HTML report with issues and
-a quality score. Then clean and save artifacts:
+Opens nothing automatically — it prints the path to an HTML report
+(`examples/messy_customers.report.html`) plus a quality score. Add `--open` to
+open it in a browser, or `-o PATH` to choose the output path. Then clean and save
+artifacts:
 
 ```bash
 cleanframe clean examples/messy_customers.csv \
@@ -40,6 +43,48 @@ cleanframe clean examples/messy_customers.csv \
   --mode auto \
   --out-dir out/
 ```
+
+`--out-dir` creates the directory and fills in four artifact paths from the input
+file's stem:
+
+| File | Contents |
+|------|----------|
+| `out/messy_customers.recipe.yaml` | The recipe — the durable artifact to review and commit |
+| `out/messy_customers.clean.csv` | Cleaned data |
+| `out/messy_customers.py` | Standalone pandas script (no CleanFrame dependency) |
+| `out/messy_customers.report.html` | HTML diff report |
+
+An explicit `--recipe` / `--out` / `--code` / `--report` overrides the path
+`--out-dir` would have chosen. Quarantined rows are **not** among them — see the
+next step.
+
+## Keep the rows that failed validation
+
+The demo ends with:
+
+```text
+⚠ 1 row(s) quarantined (pass --quarantine FILE to save them).
+```
+
+That row is not lost and not in the clean output — it is held aside. Ask for it:
+
+```bash
+cleanframe clean examples/messy_customers.csv \
+  --schema examples/customer.schema.yaml \
+  --mode auto \
+  --out-dir out/ \
+  --quarantine out/quarantined.csv
+```
+
+```text
+customer_name,signup_date,amount_inr,city,email,phone,_cf_quarantine_reason
+charlie brown,2024-01-01,1200.0,Mumbai,not-an-email,08012345678,email:valid_email
+```
+
+The `_cf_quarantine_reason` column names the rule that held the row
+(`not-an-email` fails `valid_email`). In Python the same rows are in
+`result.quarantine`. This is the default for a failing rule — CleanFrame never
+silently drops a row unless you write `on_fail: drop` yourself.
 
 ## 30-second Python demo
 
@@ -59,8 +104,8 @@ result = cf.clean(
 result.diff.show()                              # cell-level before/after
 result.recipe.save("customer.recipe.yaml")      # durable artifact
 result.code.save("clean_customers.py")          # plain pandas, no CleanFrame dep
-clean_df = result.dataframe
-quarantine = result.quarantine                  # rows that failed validation
+clean_df = result.dataframe                     # 5 rows
+quarantine = result.quarantine                  # 1 row that failed validation
 ```
 
 ## Replay next month (no LLM)
@@ -71,7 +116,9 @@ cleanframe apply new_customers.csv \
   --out clean.csv
 ```
 
-If columns renamed or formats drifted:
+Add `--quarantine q.csv` here too; without it, `apply` prints the count and drops
+the rows from the output. If columns renamed or formats drifted, `apply` stops
+with exit code `3` rather than cleaning with a stale recipe:
 
 ```bash
 cleanframe suggest new_customers.csv \

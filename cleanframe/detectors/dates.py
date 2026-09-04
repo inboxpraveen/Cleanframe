@@ -80,8 +80,18 @@ def _infer_formats(values: list[str], dayfirst: bool | None) -> tuple[list[str],
         if hit.any():
             kept.append(fmt)
             covered.loc[pending.index[hit.to_numpy()]] = True
+    kept = _reconcile_slash_formats(kept, dayfirst)
+    # Recount against the formats actually kept: dropping the conflicting d/m vs m/d
+    # family leaves values that no longer parse, and reporting 0 would hide the NaTs.
+    covered = pd.Series(False, index=ser.index)
+    for fmt in kept:
+        pending = ser[~covered]
+        if pending.empty:
+            break
+        parsed = pd.to_datetime(pending, format=fmt, errors="coerce")
+        covered.loc[pending.index[parsed.notna().to_numpy()]] = True
     unparsed = int((~covered).sum())
-    return _reconcile_slash_formats(kept, dayfirst), unparsed
+    return kept, unparsed
 
 
 def _reconcile_slash_formats(formats: list[str], dayfirst: bool | None) -> list[str]:

@@ -21,6 +21,7 @@ Checks are pluggable, like detectors::
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -30,7 +31,7 @@ import pandas as pd
 import yaml
 
 from ._util import safe_compile_regex
-from .errors import RecipeError, ValidationFailure
+from .errors import CleanFrameWarning, RecipeError, ValidationFailure
 from .profile import EMAIL_RE, URL_RE
 from .recipe import ValidationRule
 from .types import Mode
@@ -116,15 +117,32 @@ def _comparison_mask(series: pd.Series, op: str, threshold: float) -> pd.Series:
 
 
 def _membership_values(rule: ValidationRule) -> list[Any]:
-    if rule.params.get("values") is not None:
-        return list(rule.params["values"])
+    values = rule.params.get("values")
+    if values is not None:
+        return [values] if isinstance(values, str) else list(values)
     rest = rule.check[2:].strip()  # drop leading "in"
-    parsed = yaml.safe_load(rest) if rest else []
+    # BaseLoader keeps every scalar a string: YAML 1.1 would read `in [Yes, No]`
+    # as booleans and then reject every literal "Yes"/"No" in the data.
+    parsed = yaml.load(rest, Loader=yaml.BaseLoader) if rest else []
     return list(parsed) if isinstance(parsed, (list, tuple)) else [parsed]
 
 
+#: YAML 1.1 reads a bare ``Yes``/``No``/``On``/``Off`` as a boolean, so a rule written
+#: ``values: [Yes, No]`` arrives here as ``[True, False]``. Accept every spelling of
+#: the boolean rather than rejecting the literal text the data actually holds.
+_BOOL_SPELLINGS: dict[bool, tuple[str, ...]] = {
+    True: ("True", "true", "TRUE", "Yes", "yes", "YES", "On", "on", "Y", "y", "1"),
+    False: ("False", "false", "FALSE", "No", "no", "NO", "Off", "off", "N", "n", "0"),
+}
+
+
 def _membership_mask(series: pd.Series, values: list[Any]) -> pd.Series:
-    as_str = {str(v) for v in values}
+    as_str: set[str] = set()
+    for value in values:
+        if isinstance(value, bool):
+            as_str.update(_BOOL_SPELLINGS[value])
+        else:
+            as_str.add(str(value))
     return series.isna() | series.isin(values) | series.astype(str).isin(as_str)
 
 
@@ -136,11 +154,41 @@ def _regex_mask(series: pd.Series, pattern: str) -> pd.Series:
     return series.isna() | series.map(lambda v: bool(compiled.search(str(v))))
 
 
+_EXPRESSION_PREFIXES = ("in ", "in[", "matches", "regex")
+
+
+def check_is_known(check: str) -> None:
+    """Raise :class:`RecipeError` for a check that is neither registered nor an expression.
+
+    Called at recipe *load* time so a typo like ``valid_emial`` fails before the
+    recipe is applied to production data.
+    """
+    text = str(check).strip()
+    if not text:
+        raise RecipeError("A validation rule needs a non-empty 'check'.")
+    if text in VALIDATOR_REGISTRY or _CMP_RE.match(text) or text == "in":
+        return
+    if text.startswith(_EXPRESSION_PREFIXES):
+        return
+    raise RecipeError(
+        f"Unknown validation check {check!r}. Known: {', '.join(list_validators())}, "
+        "comparisons (>= 0), 'in [...]', 'matches: <regex>'. Register a custom check "
+        "with @cleanframe.validator before loading the recipe."
+    )
+
+
 def pass_mask(rule: ValidationRule, series: pd.Series) -> pd.Series:
     """Compute the boolean pass-mask (True = passes) for ``rule`` over ``series``."""
     check = rule.check.strip()
     if check in VALIDATOR_REGISTRY:
-        return VALIDATOR_REGISTRY[check](series, **rule.params).astype(bool)
+        try:
+            mask = VALIDATOR_REGISTRY[check](series, **rule.params)
+        except TypeError as exc:
+            raise RecipeError(
+                f"Validation {check!r} on column {rule.column!r} does not accept "
+                f"parameter(s) {sorted(rule.params)}: {exc}"
+            ) from exc
+        return mask.astype(bool)
 
     cmp = _CMP_RE.match(check)
     if cmp:
@@ -188,6 +236,16 @@ class ValidationOutcome:
 QUARANTINE_REASON_COL = "_cf_quarantine_reason"
 
 
+def _reason_column(df: pd.DataFrame) -> str:
+    """A free name for the quarantine reason, so a user column is never overwritten."""
+    name = QUARANTINE_REASON_COL
+    suffix = 2
+    while name in df.columns:
+        name = f"{QUARANTINE_REASON_COL}_{suffix}"
+        suffix += 1
+    return name
+
+
 def evaluate(rule: ValidationRule, df: pd.DataFrame) -> ValidationResult:
     if rule.column not in df.columns:
         return ValidationResult(rule.column, rule.check, rule.on_fail, 0, [], found=False)
@@ -230,6 +288,12 @@ def apply_validations(
                     failures=[res],
                 )
             log.append(f"validation skipped: column {res.column!r} not found")
+            warnings.warn(
+                f"CleanFrame: validation {res.check!r} skipped — column {res.column!r} is "
+                "not in the data. Use mode='strict' to fail instead.",
+                CleanFrameWarning,
+                stacklevel=2,
+            )
             continue
         if res.passed:
             continue
@@ -266,7 +330,7 @@ def apply_validations(
     if quarantine_ids:
         ordered = sorted(quarantine_ids)
         quarantine_df = work.loc[ordered].copy()
-        quarantine_df[QUARANTINE_REASON_COL] = ["; ".join(reasons[i]) for i in ordered]
+        quarantine_df[_reason_column(work)] = ["; ".join(reasons[i]) for i in ordered]
 
     for col, ids in null_actions:
         work.loc[ids, col] = np.nan
@@ -290,6 +354,7 @@ __all__ = [
     "ValidationOutcome",
     "validator",
     "list_validators",
+    "check_is_known",
     "evaluate",
     "apply_validations",
     "pass_mask",

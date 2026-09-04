@@ -18,6 +18,7 @@ non-UTF-8 encoding (Excel's Western "Save as CSV"). Every correction is:
 
 from __future__ import annotations
 
+import codecs
 import csv as _csv
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,8 @@ class ReadReport:
             out["encoding"] = self.encoding
         if self.delimiter != ",":
             out["sep"] = self.delimiter
+        if self.skipped_blank_lines:
+            out["blank_lines"] = self.skipped_blank_lines
         return out
 
 
@@ -59,21 +62,33 @@ def _decode(path: Path) -> tuple[str, str]:
     """
     with open(path, "rb") as fh:
         raw = fh.read(_DETECT_BYTES)
+    for bom, codec in (
+        (codecs.BOM_UTF32_LE, "utf-32"),
+        (codecs.BOM_UTF32_BE, "utf-32"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+    ):
+        if raw.startswith(bom):
+            return raw.decode(codec, errors="ignore"), codec
     if b"\x00" in raw:
-        from .errors import CleanFrameError
-
         raise CleanFrameError(
-            f"{path.name} looks binary (contains NUL bytes). Pass an explicit "
-            "encoding= if this really is text, or convert the file to UTF-8 CSV first."
+            f"{path.name} looks binary (contains NUL bytes, and no UTF-16/32 byte-order "
+            "mark). Pass an explicit encoding= if this really is text, or convert the "
+            "file to UTF-8 CSV first."
         )
     try:
         return raw.decode("utf-8-sig"), "utf-8"
     except UnicodeDecodeError as exc:
         if exc.start >= len(raw) - 4:  # a char split at the chunk boundary, not a bad file
             return raw[: exc.start].decode("utf-8-sig"), "utf-8"
-        # cp1252 maps every byte, so this cannot fail — a safe, deterministic fallback
-        # for Windows/Excel CSV exports that are not valid UTF-8.
-        return raw.decode("cp1252"), "cp1252"
+    # cp1252 leaves five byte values undefined, so latin-1 (which maps all 256) is the
+    # final rung: the ladder must never raise for a file that is merely not UTF-8.
+    for codec in ("cp1252", "latin-1"):
+        try:
+            return raw.decode(codec), codec
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1", errors="replace"), "latin-1"
 
 
 def _pick_delimiter(lines: list[str]) -> str:
@@ -123,8 +138,8 @@ def detect_csv_options(path: str | Path) -> tuple[dict, ReadReport]:
     delimiter = "\t" if path.suffix.lower() == ".tsv" else _pick_delimiter(sample)
 
     report = ReadReport(encoding=encoding, delimiter=delimiter, skipped_blank_lines=skip)
-    if encoding == "cp1252":
-        report.notes.append("decoded as Windows-1252/cp1252 (file was not valid UTF-8)")
+    if encoding not in ("utf-8", "utf-8-sig"):
+        report.notes.append(f"decoded as {encoding} (file was not valid UTF-8)")
     if delimiter not in (",", "\t"):
         report.notes.append(f"detected delimiter {delimiter!r} (not a comma)")
     if skip:
@@ -134,7 +149,7 @@ def detect_csv_options(path: str | Path) -> tuple[dict, ReadReport]:
     if delimiter != ",":
         options["sep"] = delimiter
     if skip:
-        options["skiprows"] = skip
+        options["blank_lines"] = skip
     return options, report
 
 

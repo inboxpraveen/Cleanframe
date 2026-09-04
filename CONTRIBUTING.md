@@ -35,7 +35,13 @@ than no change at all. The rules below exist to protect it.
 4. **Nothing is silently imputed or dropped.** Missing values are *reported*, never
    filled unless a human puts `fill_na` in the recipe. Validation failures go to a
    *quarantine* frame with a reason — never deleted. Outliers are flagged, never
-   "fixed." When you must bound coverage (top-N, sampling), surface it.
+   "fixed." When you must bound coverage (top-N, sampling), surface it. Values an op
+   cannot parse are counted and warned about, not quietly turned into nulls.
+
+   This extends to *inputs*: a misspelled op parameter, an unknown validation check
+   and a duplicate YAML key are all rejected at load time. If you add a parameter,
+   name it in the op's signature (or in `aliases=`) so the loader accepts it — a
+   parameter the loader silently ignores is a data-loss bug.
 
 5. **Every changed cell is tracked.** The executor assigns a stable row id and
    tracks column lineage so `CellDiff` can attribute every change. If you add a
@@ -88,9 +94,14 @@ recipe (`customer.schema.yaml`, `customer.recipe.yaml`). Full docs:
 ```bash
 git clone https://github.com/inboxpraveen/Cleanframe.git
 cd Cleanframe
-pip install -e ".[dev]"      # editable install + pytest + openpyxl + ruff
+pip install -e ".[dev]"      # editable install + pytest + openpyxl + ruff + mypy
 pytest                       # full suite, runs in a few seconds
+ruff check cleanframe tests  # lint
+mypy                         # the package ships py.typed, so this must stay clean
 ```
+
+The distribution is published as `cleanframe-engine`; the import package is
+`cleanframe`.
 
 Windows note: the code and tests handle currency symbols (`₹`, `€`). If your
 console mangles them, run with `PYTHONUTF8=1`. The CLI sets UTF-8 output itself.
@@ -208,8 +219,7 @@ you.
 - **Test the invariant, not just the happy path.** For anything order-sensitive, add
   a determinism assertion. For a new op with params, add the round-trip.
 - Prefer small, focused tests using the fixtures in `tests/conftest.py`.
-- Run `ruff check cleanframe` if you have it (config is in `pyproject.toml`); it's
-  advisory, not blocking.
+- `ruff check cleanframe tests` and `mypy` must both pass — CI runs them.
 
 ## Style
 

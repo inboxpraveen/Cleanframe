@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .._util import is_string_like, sample_non_null
+from .._util import is_string_like, looks_like_code_values, sample_non_null
 from ..issues import Issues
 from ..ops import DEFAULT_NA_TOKENS
 from ..types import Op, Severity
@@ -37,13 +37,19 @@ def detect_nulls(series: pd.Series, ctx: DetectorContext) -> Issues:
 
     # 1) Disguised nulls in string columns -> fixable.
     if is_string_like(series):
+        sample = sample_non_null(series)
         disguised: dict[str, int] = {}
-        for v in sample_non_null(series):
+        for v in sample:
             if isinstance(v, str) and v.strip().casefold() in _NA_LOOKUP:
                 disguised[v] = disguised.get(v, 0) + 1
         if disguised:
-            unambiguous = sorted(v for v in disguised if v.strip().casefold() not in _AMBIGUOUS_NA)
-            ambiguous = sorted(v for v in disguised if v.strip().casefold() in _AMBIGUOUS_NA)
+            ambiguous_tokens = set(_AMBIGUOUS_NA)
+            if looks_like_code_values(sample):
+                ambiguous_tokens |= {"na", "nan", "nil", "none"}
+            unambiguous = sorted(
+                v for v in disguised if v.strip().casefold() not in ambiguous_tokens
+            )
+            ambiguous = sorted(v for v in disguised if v.strip().casefold() in ambiguous_tokens)
             # Unambiguous null tokens ('', 'n/a', 'null', …) — safe to convert.
             if unambiguous:
                 n = sum(disguised[t] for t in unambiguous)

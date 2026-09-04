@@ -39,8 +39,8 @@ def detect_units(series: pd.Series, ctx: DetectorContext) -> Issues:
     if len(parsed) < max(2, int(0.5 * max(len(sample), 1))):
         return issues
 
-    families = Counter()
-    units = Counter()
+    families: Counter[str] = Counter()
+    units: Counter[str] = Counter()
     for _, unit in parsed:
         for fam, table in UNIT_FAMILIES.items():
             if unit in table:

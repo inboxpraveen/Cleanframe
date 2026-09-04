@@ -1,0 +1,44 @@
+name: Bug report
+description: Something behaved differently from what the docs promise.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A recipe plus a few rows of data reproduces most issues. Please redact real data.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The smallest CSV/recipe and the exact command or code.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The full message, or the traceback from re-running with `--debug`.
+      render: shell
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `cleanframe --version` plus your Python and pandas versions.
+      placeholder: cleanframe 0.3.0, Python 3.12.4, pandas 2.2.2
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Linux, macOS, Windows, Other]
+    validations:
+      required: true

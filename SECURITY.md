@@ -4,8 +4,9 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.2.x   | Yes       |
-| 0.1.x   | Best-effort |
+| 0.3.x   | Yes       |
+| 0.2.x   | Best-effort |
+| 0.1.x   | No        |
 
 ## Reporting a vulnerability
 
@@ -30,8 +31,14 @@ and disclosure timeline with you.
 - Recipes and schemas are loaded with `yaml.safe_load`.
 - HTML reports use Jinja2 autoescaping.
 - The LLM planner never receives raw cell values in the default `metadata` exposure.
-- CSV exports sanitise formula-like cells (`=`, `+`, `-`, `@`, …) by default.
+- CSV/Excel exports sanitise formula-like cells **and header labels** (`=`, `@`, and
+  `+`/`-` followed by anything that is not a plain number) by default. A signed
+  number is left alone so normalised phone numbers and negative amounts survive.
+- Generated standalone pandas escapes column names and validation labels, so a
+  crafted CSV header cannot inject code into the exported module.
 - User-supplied regex patterns in recipes are length- and complexity-bounded.
+- Recipes and schemas reject duplicate YAML keys instead of silently keeping the last.
+- Cleaned output never overwrites its own input file without an explicit opt-in.
 
 ## What CleanFrame is not
 

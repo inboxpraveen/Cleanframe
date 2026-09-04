@@ -16,12 +16,21 @@ Cross-platform defaults:
 
 from __future__ import annotations
 
+import csv as _csv
+import os
+import re as _re
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-from ._util import ensure_parent, sanitize_dataframe_for_csv, sanitize_dataframe_for_spreadsheet
-from .errors import CleanFrameError
+from ._util import (
+    check_output_target,
+    looks_like_code_values,
+    sanitize_dataframe_for_csv,
+    sanitize_dataframe_for_spreadsheet,
+)
+from .errors import CleanFrameError, OutputError
 
 #: Encoding for CSV/TSV. ``utf-8-sig`` accepts a BOM and writes plain UTF-8 when
 #: pandas strips the sig on read; we still pass ``encoding="utf-8"`` on write.
@@ -30,32 +39,197 @@ _CSV_WRITE_ENCODING = "utf-8"
 
 
 _EXCEL_SUFFIXES = (".xlsx", ".xls", ".xlsm")
+#: Read as delimited text. Anything else is refused rather than parsed as CSV.
+_CSV_SUFFIXES = (".csv", ".txt", ".tsv", ".dat", "")
+_TYPED_SUFFIXES = (".parquet", ".json")
+
+
+def _detail(exc: BaseException) -> str:
+    return str(exc).strip().rstrip(".")
+
+
+def _text_kwargs() -> dict[str, Any]:
+    """Read every field verbatim: no numeric coercion, no invented nulls.
+
+    Only an empty field becomes NaN, so leading zeros, ``NA``/``None`` tokens and
+    ``1e5`` survive read-time inference and stay visible in the diff.
+    """
+    return {"dtype": str, "keep_default_na": False, "na_values": [""]}
+
+
+def _pandas_skiprows(skiprows: int | list[int] | None, blank_lines: int):
+    """Translate public ``skiprows`` into pandas line indices.
+
+    Public semantics are data rows, never file lines: ``skiprows=2`` drops the first
+    two records and keeps the header (a bare pandas ``skiprows=2`` would eat it), and
+    a list holds 1-based data-row numbers. ``blank_lines`` are the empty lines the
+    format corrector found above the header.
+    """
+    lines = list(range(blank_lines))
+    if skiprows is None:
+        return lines or None
+    if isinstance(skiprows, bool):
+        raise CleanFrameError("skiprows must be a row count or a list of row numbers.")
+    if isinstance(skiprows, int):
+        if skiprows < 0:
+            raise CleanFrameError(f"skiprows must be 0 or more, got {skiprows}.")
+        lines += [blank_lines + i for i in range(1, skiprows + 1)]
+    elif isinstance(skiprows, (list, tuple)):
+        bad = [r for r in skiprows if isinstance(r, bool) or not isinstance(r, int) or r < 1]
+        if bad:
+            raise CleanFrameError(
+                f"skiprows entries must be data-row numbers of 1 or more, got {bad}."
+            )
+        lines += [blank_lines + int(r) for r in skiprows]
+    else:
+        raise CleanFrameError(
+            f"skiprows must be a row count or a list of row numbers, got "
+            f"{type(skiprows).__name__}."
+        )
+    return lines or None
+
+
+def _check_csv_header(path: Path, encoding: str, sep: str | None, blank_lines: int) -> None:
+    """Refuse duplicate or blank CSV headers instead of letting pandas rename them.
+
+    pandas turns a repeated ``name`` into ``name.1`` and a blank one into
+    ``Unnamed: 3``, so the recipe would key lineage off a label the file never had.
+    """
+    try:
+        with open(path, encoding=encoding, newline="") as fh:
+            for _ in range(blank_lines):
+                fh.readline()
+            line = fh.readline()
+    except (OSError, UnicodeDecodeError, LookupError):
+        return
+    if not line.strip():
+        return
+    fields = next(_csv.reader([line.rstrip("\r\n")], delimiter=sep or ","), None)
+    if not fields or len(fields) < 2:
+        return
+    names = [f.strip() for f in fields]
+    if any(not n for n in names):
+        raise CleanFrameError(
+            f"{path.name} has an empty column name in its header row "
+            f"(position {names.index('') + 1} of {len(names)}). Name every column, or "
+            "select the ones you need with columns=."
+        )
+    seen: dict[str, int] = {}
+    for n in names:
+        seen[n] = seen.get(n, 0) + 1
+    dups = sorted(n for n, c in seen.items() if c > 1)
+    if dups:
+        raise CleanFrameError(
+            f"{path.name} has duplicate column name(s) {dups} in its header row. "
+            "CleanFrame needs unique names — rename them in the file, or select a "
+            "subset with columns=."
+        )
 
 
 def excel_sheet_names(path: str | Path) -> list[str]:
     """Return a workbook's sheet names in file order (raises CleanFrameError on error)."""
     path = Path(path)
     try:
-        return list(pd.ExcelFile(path).sheet_names)
+        with pd.ExcelFile(path) as workbook:
+            return list(workbook.sheet_names)
     except ImportError as exc:  # pragma: no cover - optional engine missing
         raise CleanFrameError(
-            f"Reading Excel requires openpyxl: {exc}. Try `pip install cleanframe[excel]`."
+            f"Reading Excel requires openpyxl ({_detail(exc)}). "
+            "Try `pip install cleanframe-engine[excel]`."
         ) from exc
+    except CleanFrameError:
+        raise
     except Exception as exc:  # noqa: BLE001
-        raise CleanFrameError(f"Could not open workbook {path.name}: {exc}.") from exc
+        raise CleanFrameError(
+            f"Could not open workbook {path.name}: {_detail(exc)}."
+        ) from exc
 
 
 def _apply_row_slice(df: pd.DataFrame, nrows: int | None, skiprows) -> pd.DataFrame:
-    """Post-read row selection for formats without native nrows/skiprows (parquet/json)."""
+    """Row selection for formats with no header line (parquet/json).
+
+    Uses the same public semantics as the CSV path: an int drops that many leading
+    data rows, a list names 1-based data rows.
+    """
     if skiprows is not None:
-        if isinstance(skiprows, int):
+        if isinstance(skiprows, int) and not isinstance(skiprows, bool):
+            if skiprows < 0:
+                raise CleanFrameError(f"skiprows must be 0 or more, got {skiprows}.")
             df = df.iloc[skiprows:]
+        elif isinstance(skiprows, (list, tuple)):
+            drop = {int(r) - 1 for r in skiprows}
+            df = df.iloc[[i for i in range(len(df)) if i not in drop]]
         else:
-            keep = [i for i in range(len(df)) if i not in set(skiprows)]
-            df = df.iloc[keep]
+            raise CleanFrameError(
+                "skiprows must be a row count or a list of row numbers, got "
+                f"{type(skiprows).__name__}."
+            )
     if nrows is not None:
+        if not isinstance(nrows, int) or isinstance(nrows, bool) or nrows < 0:
+            raise CleanFrameError(f"nrows must be 0 or more, got {nrows!r}.")
         df = df.head(nrows)
     return df
+
+
+_LEADING_ZERO_RE = _re.compile(r"^[+-]?0\d")
+_SCI_RE = _re.compile(r"^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$")
+_BOOL_TEXT = frozenset({"true", "false", "yes", "no"})
+#: Spellings that mean "missing" in most datasets. Reading them as NaN is what the
+#: file asked for, so it is not worth a warning — unless the column holds short
+#: codes, where ``NA`` is Namibia. ``None``/``nil`` stay reportable everywhere.
+_PLAIN_NULL_TEXT = frozenset(
+    {"n/a", "na", "null", "nan", "-nan", "<na>", "#n/a", "#na", "#n/a n/a"}
+)
+
+
+def compare_for_losses(df: pd.DataFrame, raw: pd.DataFrame) -> dict[str, str]:
+    """Columns where the coerced frame differs from the verbatim one, and how."""
+    losses: dict[str, str] = {}
+    rows = min(len(raw), len(df))
+    for col in df.columns:
+        if col not in raw.columns:
+            continue
+        coerced = df[col].to_numpy()
+        literal = raw[col].to_numpy()
+        code_column = looks_like_code_values(literal[:rows])
+        for i in range(rows):
+            text = literal[i]
+            if not isinstance(text, str) or not text.strip():
+                continue
+            token = text.strip()
+            value = coerced[i]
+            try:
+                missing = bool(pd.isna(value))
+            except (TypeError, ValueError):  # pragma: no cover - exotic cell
+                continue
+            if missing:
+                if token.casefold() in _PLAIN_NULL_TEXT and not code_column:
+                    continue
+                losses[str(col)] = f"{token!r} was read as a missing value"
+            elif isinstance(value, bool) and token.casefold() in _BOOL_TEXT:
+                losses[str(col)] = f"{token!r} was read as the boolean {value}"
+            elif not isinstance(value, str) and _LEADING_ZERO_RE.match(token):
+                losses[str(col)] = f"{token!r} lost its leading zero(s) and became {value}"
+            elif not isinstance(value, str) and _SCI_RE.match(token):
+                losses[str(col)] = f"{token!r} was rewritten as {value}"
+            else:
+                continue
+            break
+    return losses
+
+
+def inference_losses(path: str | Path, df: pd.DataFrame, *, limit: int = 200, **read_kwargs):
+    """Columns whose values pandas changed while reading ``path``, and how.
+
+    Read-time coercion happens before CleanFrame sees the data, so no diff can show
+    it: a leading-zero ZIP, a ``None`` token or a country code of ``NA`` is already
+    gone. A bounded verbatim re-read makes the loss visible.
+    """
+    try:
+        raw = read_frame(path, nrows=limit, text=True, **read_kwargs)
+    except CleanFrameError:
+        return {}
+    return compare_for_losses(df, raw)
 
 
 def read_frame(
@@ -65,6 +239,8 @@ def read_frame(
     columns: list[str] | None = None,
     nrows: int | None = None,
     skiprows: int | list[int] | None = None,
+    blank_lines: int = 0,
+    text: bool = False,
     **kwargs,
 ) -> pd.DataFrame:
     """Read a single dataframe, dispatching on file extension.
@@ -78,8 +254,15 @@ def read_frame(
         to clean every sheet.
     columns / nrows / skiprows:
         Select a subset of columns (``usecols``) and/or a row range. ``columns`` is a
-        *filter*, not a reorder — output keeps file order. Under ``skiprows``/``nrows``
-        the diff's ``row_id`` is relative to the loaded slice, not the physical file line.
+        *filter*, not a reorder — output keeps file order. ``skiprows`` counts *data
+        rows*, never file lines: an int drops that many leading records and keeps the
+        header; a list names 1-based data rows. Under ``skiprows``/``nrows`` the diff's
+        ``row_id`` is relative to the loaded slice, not the physical file line.
+    text:
+        Read every field as a string (CSV/Excel). Pandas otherwise infers types while
+        reading, which drops leading zeros, turns ``NA``/``None`` text into NaN and
+        rewrites ``1e5`` — losses no diff can show because they happen before CleanFrame
+        sees the data.
 
     Any failure pandas/pyarrow would surface as a raw traceback is re-raised as a
     :class:`~cleanframe.errors.CleanFrameError` with an actionable hint.
@@ -95,8 +278,32 @@ def read_frame(
     is_excel = suffix in _EXCEL_SUFFIXES
     if sheet is not None and not is_excel:
         raise CleanFrameError(f"sheet= is only valid for Excel files, not {suffix or 'this file'}.")
+    if not is_excel and suffix not in _CSV_SUFFIXES and suffix not in _TYPED_SUFFIXES:
+        raise CleanFrameError(
+            f"Unsupported input format {suffix!r} for {path.name}. CleanFrame reads "
+            ".csv/.txt/.tsv/.dat, .xlsx/.xlsm/.xls, .parquet and .json. Convert the file, "
+            "or rename it to the extension matching its contents."
+        )
     try:
         if is_excel:
+            if sheet is not None:
+                names = excel_sheet_names(path)
+                if isinstance(sheet, str) and sheet not in names:
+                    hint = (
+                        " A bare number is read as a sheet *name*; use the CLI form "
+                        f"--sheet '#{sheet}' (or sheet={sheet} in Python) for a positional index."
+                        if sheet.isdigit()
+                        else ""
+                    )
+                    raise CleanFrameError(
+                        f"Sheet {sheet!r} not found in {path.name}. "
+                        f"Available sheets: {names}.{hint}"
+                    )
+                if isinstance(sheet, int) and not -len(names) <= sheet < len(names):
+                    raise CleanFrameError(
+                        f"Sheet index {sheet} is out of range for {path.name}, which has "
+                        f"{len(names)} sheet(s): {names}."
+                    )
             if sheet is None:
                 names = excel_sheet_names(path)
                 if len(names) > 1:
@@ -107,12 +314,25 @@ def read_frame(
                     )
                 sheet = 0
             xl_kwargs = dict(kwargs)
+            xl_kwargs.pop("encoding", None)
+            xl_kwargs.pop("sep", None)
+            if text:
+                for key, value in _text_kwargs().items():
+                    xl_kwargs.setdefault(key, value)
             if columns is not None:
+                available = list(pd.read_excel(path, sheet_name=sheet, nrows=0).columns)
+                missing = [c for c in columns if c not in available]
+                if missing:
+                    raise CleanFrameError(
+                        f"Requested column(s) not found in {path.name}: {missing}. "
+                        f"Available: {available}."
+                    )
                 xl_kwargs["usecols"] = list(columns)
             if nrows is not None:
                 xl_kwargs["nrows"] = nrows
-            if skiprows is not None:
-                xl_kwargs["skiprows"] = skiprows
+            xl_skiprows = _pandas_skiprows(skiprows, blank_lines)
+            if xl_skiprows is not None:
+                xl_kwargs["skiprows"] = xl_skiprows
             df = pd.read_excel(path, sheet_name=sheet, **xl_kwargs)
             if isinstance(df, dict):
                 raise CleanFrameError("sheet must select a single sheet (a name or index).")
@@ -132,44 +352,90 @@ def read_frame(
                     )
                 df = df[list(columns)]
             return _apply_row_slice(df, nrows, skiprows)
-        # CSV family (.csv/.txt/.tsv and unknown extensions).
+        # CSV family (.csv/.txt/.tsv/.dat and extension-less files).
         kwargs.setdefault("encoding", _CSV_READ_ENCODING)
         if suffix == ".tsv":
             kwargs.setdefault("sep", "\t")
+        if text:
+            for key, value in _text_kwargs().items():
+                kwargs.setdefault(key, value)
+        _check_csv_header(path, kwargs["encoding"], kwargs.get("sep"), blank_lines)
+        # index_col=False: a row with one field too many (a stray trailing delimiter)
+        # otherwise becomes the index and shifts every column one place left.
+        kwargs.setdefault("index_col", False)
+        csv_skiprows = _pandas_skiprows(skiprows, blank_lines)
+        if csv_skiprows is not None:
+            kwargs["skiprows"] = csv_skiprows
         if columns is not None:
-            kwargs["usecols"] = list(columns)
-        if nrows is not None:
-            kwargs["nrows"] = nrows
-        if skiprows is not None:
-            kwargs["skiprows"] = skiprows
-        df = pd.read_csv(path, **kwargs)
-        if columns is not None:
-            missing = [c for c in columns if c not in df.columns]
+            header_kwargs = {
+                k: v for k, v in kwargs.items() if k in ("encoding", "sep", "skiprows", "index_col")
+            }
+            available = list(pd.read_csv(path, nrows=0, **header_kwargs).columns)
+            missing = [c for c in columns if c not in available]
             if missing:
                 raise CleanFrameError(
                     f"Requested column(s) not found in {path.name}: {missing}. "
-                    f"Available: {list(df.columns)}."
+                    f"Available: {available}."
                 )
-        return df
+            kwargs["usecols"] = list(columns)
+        if nrows is not None:
+            if not isinstance(nrows, int) or isinstance(nrows, bool) or nrows < 0:
+                raise CleanFrameError(f"nrows must be 0 or more, got {nrows!r}.")
+            kwargs["nrows"] = nrows
+        return pd.read_csv(path, **kwargs)
     except ImportError as exc:  # pragma: no cover - optional engine missing
-        hint = "Try `pip install cleanframe[excel]` for Excel support."
+        hint = "Try `pip install cleanframe-engine[excel]` for Excel support."
         if suffix == ".parquet":
-            hint = "Try `pip install cleanframe[parquet]` (pyarrow) for Parquet support."
-        raise CleanFrameError(f"Reading {suffix} requires an extra engine: {exc}. {hint}") from exc
+            hint = "Try `pip install cleanframe-engine[parquet]` (pyarrow) for Parquet support."
+        elif suffix == ".xls":
+            hint = "Legacy .xls needs xlrd: `pip install xlrd` (.xlsx needs only openpyxl)."
+        raise CleanFrameError(
+            f"Reading {suffix} requires an extra engine ({_detail(exc)}). {hint}"
+        ) from exc
     except CleanFrameError:
         raise
     except UnicodeDecodeError as exc:
         raise CleanFrameError(
             f"Could not decode {path.name} as UTF-8 ({exc}). It may be saved as "
             "Latin-1 / Windows-1252 / UTF-16 (common for Excel 'Save as CSV' on "
-            "Windows) — pass encoding='cp1252' (or the correct codec) to read_frame."
+            "Windows). Read it with cleanframe.read_frame(..., encoding='cp1252'), "
+            "let `clean`/`report` detect the encoding for you, or record it in the "
+            "recipe's read: section (encoding: cp1252) for replay."
         ) from exc
-    except Exception as exc:  # noqa: BLE001 - IO boundary: surface any parse failure cleanly
+    except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
         raise CleanFrameError(
-            f"Could not read {path.name}: {type(exc).__name__}: {exc}. "
+            f"Could not parse {path.name}: {type(exc).__name__}: {_detail(exc)}. "
             "Check the delimiter/quoting, that the file matches its extension, and "
             "that it is not truncated."
         ) from exc
+    except OSError as exc:
+        raise CleanFrameError(f"Could not read {path}: {_detail(exc)}.") from exc
+    except Exception as exc:  # noqa: BLE001 - IO boundary: surface any failure cleanly
+        raise CleanFrameError(
+            f"Could not read {path.name}: {type(exc).__name__}: {_detail(exc)}."
+        ) from exc
+
+
+def _write_dispatch(
+    df: pd.DataFrame, target: Path, suffix: str, sanitize_csv: bool, kwargs: dict
+) -> None:
+    if suffix == ".parquet":
+        df.to_parquet(target, index=False, **kwargs)
+        return
+    if suffix == ".json":
+        kwargs.setdefault("force_ascii", False)
+        df.to_json(target, orient="records", indent=2, **kwargs)
+        return
+    if suffix in (".xlsx", ".xlsm"):
+        out = sanitize_dataframe_for_spreadsheet(df) if sanitize_csv else df
+        kwargs.setdefault("engine", "openpyxl")
+        out.to_excel(target, index=False, **kwargs)
+        return
+    out = sanitize_dataframe_for_csv(df) if sanitize_csv else df
+    kwargs.setdefault("encoding", _CSV_WRITE_ENCODING)
+    kwargs.setdefault("lineterminator", "\n")
+    kwargs.setdefault("sep", "\t" if suffix == ".tsv" else ",")
+    out.to_csv(target, index=False, **kwargs)
 
 
 def write_frame(
@@ -177,54 +443,64 @@ def write_frame(
     path: str | Path,
     *,
     sanitize_csv: bool = True,
+    source: str | Path | None = None,
+    overwrite: bool = False,
     **kwargs,
 ) -> Path:
     """Write a dataframe, dispatching on file extension. Never writes the index.
 
+    The frame is written to a temporary sibling and moved into place, so a failure
+    part-way through leaves the previous file intact rather than a truncated one.
+
     Parameters
     ----------
     sanitize_csv:
-        When ``True`` (default), string cells that look like spreadsheet formulas
-        (leading ``=``, ``+``, ``-``, ``@``, …) are escaped before CSV/TSV/Excel
-        export. Set ``False`` only when you intentionally need raw formula cells.
+        When ``True`` (default), string cells and headers that look like spreadsheet
+        formulas (leading ``=``, ``@``, or ``+``/``-`` followed by a non-number) are
+        escaped before CSV/TSV/Excel export. Set ``False`` only when you intentionally
+        need raw formula cells.
+    source / overwrite:
+        ``source`` is the path the data was read from; writing back over it needs
+        ``overwrite=True`` so the original is never destroyed by accident.
     """
-    path = ensure_parent(path)
+    if not isinstance(df, pd.DataFrame):
+        raise CleanFrameError(f"write_frame expects a DataFrame, got {type(df).__name__}.")
+    path = check_output_target(path, source, overwrite=overwrite)
     suffix = path.suffix.lower()
-
-    if suffix in (".csv", ".txt"):
-        out = sanitize_dataframe_for_csv(df) if sanitize_csv else df
-        kwargs.setdefault("encoding", _CSV_WRITE_ENCODING)
-        kwargs.setdefault("lineterminator", "\n")
-        out.to_csv(path, index=False, **kwargs)
-    elif suffix == ".tsv":
-        out = sanitize_dataframe_for_csv(df) if sanitize_csv else df
-        kwargs.setdefault("encoding", _CSV_WRITE_ENCODING)
-        kwargs.setdefault("lineterminator", "\n")
-        out.to_csv(path, sep="\t", index=False, **kwargs)
-    elif suffix in (".xlsx", ".xls", ".xlsm"):
-        out = sanitize_dataframe_for_spreadsheet(df) if sanitize_csv else df
-        try:
-            out.to_excel(path, index=False, **kwargs)
-        except ImportError as exc:  # pragma: no cover
-            raise CleanFrameError(
-                f"Writing {suffix} requires openpyxl. Try `pip install cleanframe[excel]`."
-            ) from exc
-    elif suffix == ".parquet":
-        try:
-            df.to_parquet(path, index=False, **kwargs)
-        except ImportError as exc:  # pragma: no cover
-            raise CleanFrameError(
-                "Writing .parquet requires pyarrow. Try `pip install cleanframe[parquet]`."
-            ) from exc
-    elif suffix == ".json":
-        kwargs.setdefault("force_ascii", False)
-        df.to_json(path, orient="records", indent=2, **kwargs)
-    else:
-        out = sanitize_dataframe_for_csv(df) if sanitize_csv else df
-        kwargs.setdefault("encoding", _CSV_WRITE_ENCODING)
-        kwargs.setdefault("lineterminator", "\n")
-        out.to_csv(path, index=False, **kwargs)
+    if suffix == ".xls":
+        raise OutputError(
+            "Writing legacy .xls is not supported: pandas emits .xlsx bytes, which "
+            "Excel refuses under an .xls name. Write .xlsx instead."
+        )
+    tmp = path.with_name(path.name + ".cf-tmp")
+    try:
+        _write_dispatch(df, tmp, suffix, sanitize_csv, kwargs)
+        os.replace(tmp, path)
+    except ImportError as exc:  # pragma: no cover - optional engine missing
+        tmp.unlink(missing_ok=True)
+        extra = "parquet" if suffix == ".parquet" else "excel"
+        raise OutputError(
+            f"Writing {suffix} requires an extra engine ({_detail(exc)}). "
+            f"Try `pip install cleanframe-engine[{extra}]`."
+        ) from exc
+    except CleanFrameError:
+        tmp.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise OutputError(f"Could not write {path}: {_detail(exc)}.") from exc
+    except Exception as exc:  # noqa: BLE001 - IO boundary
+        tmp.unlink(missing_ok=True)
+        raise OutputError(
+            f"Could not write {path.name}: {type(exc).__name__}: {_detail(exc)}."
+        ) from exc
     return path
 
 
-__all__ = ["read_frame", "write_frame", "excel_sheet_names"]
+__all__ = [
+    "read_frame",
+    "write_frame",
+    "excel_sheet_names",
+    "inference_losses",
+    "compare_for_losses",
+]

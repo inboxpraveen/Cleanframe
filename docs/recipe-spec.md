@@ -7,6 +7,39 @@ A recipe stays `version: 1` unless it carries a `read:` section (below), which
 promotes it to `version: 2`; the loader reads both. Workbook recipes are a
 separate `version: 2` shape — see *Workbook recipes* below.
 
+## Typos fail at load, not at run time
+
+An unknown or misspelled **op parameter is rejected** when the recipe loads, with
+the list of valid parameters for that op:
+
+```text
+Op 'dedup' got unknown parameter(s) ['case_insensitive']. Valid parameters:
+['ignore_case', 'keep', 'subset']. A misspelled parameter would be ignored.
+```
+
+Also validated at load time, before any data is touched:
+
+| Rejected | Example message |
+|----------|-----------------|
+| Unknown op name | `Unknown op 'stip_whitespace'. Known ops: …` |
+| Unknown op parameter | see above |
+| A `cast` target outside the list below | `Op 'cast' has unknown target 'flaot'.` |
+| A `normalize_unit` target outside the units below | `Op 'normalize_unit' has unknown target unit 'furlong'.` |
+| `dedup` `keep` other than `first` / `last` / `false` | `Op 'dedup' keep must be 'first', 'last' or false.` |
+| A `fill_na` `strategy` outside the list below | `Op 'fill_na' unknown strategy 'average'.` |
+| An unknown validation `check` name | `Unknown validation check 'valid_emial'.` |
+| An `on_fail` outside the five policies | `Validation on_fail must be one of […]` |
+| An unknown key in `read:` | `Unknown key(s) ['bogus'] in the recipe 'read' section.` |
+| An unknown top-level key | `Unknown top-level recipe key(s): […]` |
+| A duplicate YAML key anywhere in the file | `duplicate key 'version' on line 2 …` |
+
+Duplicate YAML keys are an **error**, not last-wins. `version` must be a whole
+number and one of `1` / `2` (anything non-numeric is rejected). `meta` must be a
+mapping. `rename_to` must be a non-empty string.
+
+Spell every parameter exactly as the table below gives it — the loader accepts no
+near-misses.
+
 ## Top-level fields
 
 ```yaml
@@ -16,20 +49,23 @@ columns:                            # map of source column name → ColumnRecipe
   "Customer Name":
     rename_to: customer_name
     ops: [strip_whitespace, title_case]
-frame_ops:                          # optional list
-  - dedup: {subset: [email], keep: first}
+dedup: {subset: [email], keep: first}   # optional; dedup serialises at the top level
+frame_ops:                          # optional list (dedup also loads here)
+  - drop_columns: [internal_notes]
 validate:                           # optional list of rules
   - {column: email, check: valid_email, on_fail: quarantine}
 meta:                               # optional free-form
   generated_by: rules
 ```
 
+`read:` is the one further top-level key (see below). Anything else is rejected.
+
 ## Column recipes
 
 | Field | Meaning |
 |-------|---------|
 | key | **Source** column name as it appears in the input file |
-| `rename_to` | Output name after Phase 2 |
+| `rename_to` | Output name after Phase 2 (non-empty string) |
 | `ops` | Ordered list of column ops (see below) |
 
 Ops may be bare names or mappings with parameters:
@@ -44,6 +80,9 @@ ops:
       Bengaluru: Bangalore
       BLR: Bangalore
 ```
+
+An op may also appear as a sibling key next to `rename_to:` instead of inside
+`ops:`; both load to the same recipe.
 
 ## Column ops (execution order)
 
@@ -67,28 +106,54 @@ same order so transforms compose safely:
 15. `capitalize` / `title_case` / `lowercase` / `uppercase`
 16. `fill_na` *(never auto-proposed — human only)*
 
-### Notable parameters
+An op the planner does not order keeps its insertion position after all ordered
+ones. Ops inside a hand-written `ops:` list run exactly as written.
 
-| Op | Params |
-|----|--------|
-| `to_na` | `tokens`, `case_insensitive` |
-| `parse_date` | `formats`, `dayfirst`, `output` (`iso` default) |
-| `parse_number` | decimal/thousands separators, strip symbols |
-| `cast` | `to`: `float` \| `int` \| `string` \| `bool` \| `datetime` \| `category` — **int rounds floats** |
-| `normalize_phone` | `country_code` |
-| `normalize_values` | mapping `{variant: canonical}` |
-| `extract_currency` | emits `<col>_currency` |
-| `normalize_unit` | `to` target unit |
-| `replace` | `pattern`, `repl`, `regex` — patterns length/complexity limited |
-| `fill_na` | `value` or `strategy` (`mean`/`median`/`mode`) |
-| `round` | `ndigits` |
+## Op parameters
+
+`strip_whitespace`, `collapse_whitespace`, `lowercase`, `uppercase`,
+`title_case`, `normalize_email` and `capitalize` take no parameters.
+
+| Op | Parameters | Notes |
+|----|------------|-------|
+| `to_na` | `tokens`, `case_insensitive` | `tokens` is a string or list; omitted uses the default token list below. `case_insensitive` defaults `true`. A bare list or scalar is the token list: `to_na: ["-", "?"]` |
+| `parse_date` | `formats`, `dayfirst`, `yearfirst`, `output` | `formats` is a **list** of strftime patterns (a bare string is rejected); `allowed` is accepted as an alias. `dayfirst`/`yearfirst` default `false`. `output` defaults `%Y-%m-%d`; `iso`/`date` mean the same; `datetime`/`raw`/`none` keep datetime dtype; anything else is used as a strftime pattern |
+| `parse_number` | `decimal`, `thousands`, `symbols` | Defaults `"."`, `","`, `[]`. Set `decimal: ","` / `thousands: "."` for European formats; `symbols` is a list of substrings to strip first |
+| `round` | `decimals` | `round: 2` or `round: {decimals: 2}` |
+| `cast` | `to` | `cast: float` shorthand or `cast: {to: float}`. Targets: `float`, `float64`, `number`, `int`, `integer`, `int64`, `string`, `str`, `text`, `bool`, `boolean`, `datetime`, `date`, `category` — **int rounds floats** (banker's rounding, to nullable `Int64`) |
+| `remove_symbols` | `symbols` | A string or a list of strings: `remove_symbols: ","` or `remove_symbols: ["₹", ","]`. A number is rejected — quote it |
+| `replace` | `pattern`, `repl`, `regex` | `pattern` is required; `repl` defaults `""`, `regex` defaults `true`. Patterns are length/complexity limited |
+| `normalize_phone` | `default_country_code` | `country_code` and `region` are accepted as aliases. A bare string is the code: `normalize_phone: "+91"` |
+| `normalize_values` | `map`, `case_insensitive` | A bare mapping **is** the map: `normalize_values: {BLR: Bangalore}`. Use the `map:` key when you also want `case_insensitive: true` |
+| `extract_currency` | `to`, `default` | Emits a new ISO-code column named `to` (default `<col>_currency`) and leaves the source column unchanged. `default` is the code for cells with no symbol. A bare string is `to` |
+| `normalize_unit` | `to`, `emit_unit_column` | `to` is a unit from one family: mass `mg` `g` `kg` `oz` `lb`; length `mm` `cm` `m` `km` `in` `ft` `yd`; volume `ml` `l` `gal`. A bare string is `to`. Cross-family and unparseable cells become NaN; `emit_unit_column` records the original unit |
+| `fill_na` | `value`, `strategy` | `strategy` is one of `mean`, `median`, `mode`, `ffill`, `pad`, `bfill`, `backfill`, `zero`, `empty`; otherwise `value` is a constant. A bare scalar is `value`: `fill_na: 0`. Never auto-proposed |
+
+Default `to_na` tokens (matched case-insensitively after trimming): empty string,
+`na`, `n/a`, `n.a.`, `null`, `none`, `nil`, `nan`, `-`, `--`, `?`, `unknown`,
+`not available`, `not applicable`.
 
 ## Frame ops
 
-| Op | Params |
-|----|--------|
-| `dedup` | `subset`, `keep`, `case_insensitive` |
-| `drop_columns` | list of names |
+| Op | Parameters | Notes |
+|----|------------|-------|
+| `dedup` | `subset`, `keep`, `ignore_case` | `subset` is a column name or list (omitted = all columns); `keep` is `first` (default), `last` or `false`; `ignore_case` defaults `false` and also ignores surrounding whitespace |
+| `drop_columns` | `columns` | A name or a list: `drop_columns: [a, b]`. Absent columns are ignored |
+
+`dedup` is serialised at the **top level** — that is what `Recipe.to_dict` emits,
+with default parameters pruned:
+
+```yaml
+dedup: {subset: [email]}     # keep: first is the default, so it is omitted
+```
+
+```yaml
+dedup: true                  # dedup on every column, all defaults
+```
+
+The equivalent `frame_ops: [{dedup: {subset: [email]}}]` also loads, as does the
+shorthand `dedup: [email, phone]` (a bare subset list). Every other frame op
+serialises under `frame_ops:`.
 
 ## Validation rules
 
@@ -100,20 +165,50 @@ validate:
   - column: email
     check: valid_email
     on_fail: quarantine
+  - column: city
+    check: in
+    values: [Bangalore, Bengaluru, Mumbai, Delhi]
+    on_fail: quarantine
   - column: code
     check: "matches: ^[A-Z]{3}$"
     on_fail: warn
 ```
 
+`column` and `check` are required; `on_fail` defaults to `quarantine`.
+
 ### Named checks
 
 `not_null`, `unique`, `valid_email`, `valid_url`, `valid_phone`
 
+Register your own with `@cleanframe.validator("name")` **before** loading the
+recipe — an unrecognised `check` is rejected at load.
+
 ### Expressions
 
 - Comparisons: `>= 0`, `<= 100`, `== 1`, `!= 0`, `>`, `<`
-- Membership: `in [a, b, c]`
+- Membership: `in [a, b, c]`, or `check: in` with a sibling `values:` list
 - Regex: `matches: <pattern>` or `regex: <pattern>`
+
+Both membership forms are equivalent. `check: in` plus `values:` is what a
+generated recipe emits (it is how a schema's `allowed_values` is expressed):
+
+```yaml
+- {column: city, check: in, values: [Bangalore, Mumbai]}
+- {column: city, check: "in [Bangalore, Mumbai]"}
+```
+
+Membership values are compared **as text**, so `in [Yes, No]` matches the
+literal strings `"Yes"` / `"No"`. YAML reads a bare `Yes`/`No`/`On`/`Off` as a
+boolean; every spelling of that boolean is matched, so both forms below behave
+the same. Quoting is still clearer about what the data holds:
+
+```yaml
+- {column: consent, check: in, values: ["Yes", "No"]}
+- {column: consent, check: in, values: [Yes, No]}     # same effect
+```
+
+Null cells always pass a membership, comparison or regex check; use `not_null`
+to require a value.
 
 ### `on_fail` policies
 
@@ -136,7 +231,8 @@ count, and a sample hash. Do not hand-edit unless you know why.
 
 Optional top-level block recording how the source slice was read, so
 `apply_recipe` re-reads the same slice. Its presence promotes the recipe to
-`version: 2`.
+`version: 2`; a `version: 2` recipe without a `read:` section loads and
+serialises back as `version: 1`.
 
 ```yaml
 version: 2
@@ -147,13 +243,29 @@ read:
   skiprows: 2
   encoding: utf-8        # pinned by read-time format correction
   sep: ","               # pinned delimiter
+  blank_lines: 0         # empty lines above the header
+  text: true             # every field was read verbatim
 columns:
   ...
 ```
 
-`clean`/`report` record `sheet`/`columns`/`nrows`/`skiprows` (and, from format
-auto-correction, `encoding`/`sep`); `apply_recipe` replays them. Under
-`skiprows`/`nrows` the diff `row_id` is relative to the loaded slice.
+| Key | Meaning |
+|-----|---------|
+| `sheet` | Excel sheet name, or a 0-based index |
+| `columns` | Column subset (`usecols`) — a filter, not a reorder; output keeps file order |
+| `nrows` | Read only the first N data rows |
+| `skiprows` | Skip N leading **data** rows (the header row is kept), or a list of 1-based data-row numbers |
+| `encoding` | File encoding, pinned by read-time format correction |
+| `sep` | Field delimiter, pinned by read-time format correction |
+| `blank_lines` | Empty lines above the header row, found by the format corrector |
+| `text` | `true` means every field was read verbatim — no numeric coercion, no invented nulls, so leading zeros, literal `NA`/`None` and `1e5` survive |
+
+Any other key is rejected.
+
+`clean`/`report` record `sheet`/`columns`/`nrows`/`skiprows` and `text` (and,
+from format auto-correction, `encoding`/`sep`/`blank_lines`); `apply_recipe`
+replays them. Under `skiprows`/`nrows` the diff `row_id` is relative to the
+loaded slice.
 
 ## Workbook recipes
 

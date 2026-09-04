@@ -21,8 +21,20 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
+from .errors import CleanFrameError
 from .recipe import Recipe, ValidationRule
 from .types import Op
+
+_UNSAFE_COMMENT_RE = re.compile(r"[\r\n]+")
+
+
+def _comment(text: object) -> str:
+    """One-line, code-safe rendering of user text for a generated comment.
+
+    A column name containing a newline would otherwise continue the generated module
+    on the next line — outside the comment — as executable code.
+    """
+    return _UNSAFE_COMMENT_RE.sub(" ", str(text))[:120]
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +64,7 @@ def _constants_source() -> str:
             f"_COMMON_DATE_FORMATS = {list(COMMON_DATE_FORMATS)!r}",
             r"_CODE_RE = re.compile(r'\b([A-Z]{3})\b')",
             r"_UNIT_VALUE_RE = re.compile(r'^\s*([+-]?\d+(?:[.,]\d+)?)\s*([A-Za-z]+)\s*$')",
+            r"_PHONE_EXT_RE = re.compile(r'[\s,;]*(?:ext|extn|x|#)\.?\s*\d+\s*$', re.IGNORECASE)",
             r"_NUMBER_TOKEN_RE = re.compile(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?')",
             r"_STRICT_NUM_RE = re.compile(r'^[+-]?\d+(\.\d+)?$')",
             r"_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')",
@@ -170,17 +183,26 @@ def _detect_currency(v, default=None):
     return default if default is not None else np.nan
 
 
+def _phone_text(v):
+    """Stringify a phone cell without inventing digits (a float column has a '.0')."""
+    if isinstance(v, float) and float(v).is_integer():
+        return str(int(v))
+    return str(v)
+
+
 def _normalize_phone(series, default_country_code=None):
     def one(v):
         if v is None or (isinstance(v, float) and np.isnan(v)):
             return v
-        s = str(v)
+        if isinstance(v, bool):
+            return np.nan
+        s = _PHONE_EXT_RE.sub("", _phone_text(v))
         plus = s.strip().startswith("+")
         digits = re.sub(r"\\D", "", s)
         if not digits:
             return np.nan
         if plus:
-            return "+" + digits
+            return "+" + digits  # noqa: RET504
         if default_country_code:
             cc = re.sub(r"\\D", "", str(default_country_code))
             if cc and digits.startswith(cc):
@@ -294,7 +316,16 @@ def _v_cmp(s, op, threshold):
 
 
 def _v_in(s, values):
-    as_str = {str(v) for v in values}
+    _BOOL_SPELLINGS = {
+        True: ("True", "true", "TRUE", "Yes", "yes", "YES", "On", "on", "Y", "y", "1"),
+        False: ("False", "false", "FALSE", "No", "no", "NO", "Off", "off", "N", "n", "0"),
+    }
+    as_str = set()
+    for v in values:
+        if isinstance(v, bool):
+            as_str.update(_BOOL_SPELLINGS[v])
+        else:
+            as_str.add(str(v))
     return s.isna() | s.isin(values) | s.astype(str).isin(as_str)
 
 
@@ -463,7 +494,7 @@ _EMITTERS: dict[str, Callable[[dict, str], list[str]]] = {
 }
 
 
-def _emit_column_op(op: Op, source: str) -> list[str]:
+def _emit_column_op(op: Op, source: str, unsupported: list[str] | None = None) -> list[str]:
     if op.name in _SIMPLE:
         return [f"    {_col(source)} = _smap({_col(source)}, {_SIMPLE[op.name]})"]
     if op.name in _EMITTERS:
@@ -483,7 +514,9 @@ def _emit_column_op(op: Op, source: str) -> list[str]:
             f"    {_col(source)} = pd.to_numeric({_col(source)}, errors='coerce')"
             f".round({op.params.get('decimals', 0)})"
         ]
-    return [f"    # NOTE: op {op.name!r} is not reproduced by codegen"]
+    if unsupported is not None:
+        unsupported.append(f"op {op.name!r} on column {source!r}")
+    return [f"    # NOTE: op {_comment(op.name)!r} is not reproduced by codegen"]
 
 
 # -- validation emission -----------------------------------------------------
@@ -492,12 +525,13 @@ _CMP_RE = re.compile(r"^(>=|<=|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)$")
 
 
 def _membership_values(rule: ValidationRule) -> list:
-    if rule.params.get("values") is not None:
-        return list(rule.params["values"])
+    values = rule.params.get("values")
+    if values is not None:
+        return [values] if isinstance(values, str) else list(values)
     import yaml
 
     rest = rule.check[2:].strip()
-    parsed = yaml.safe_load(rest) if rest else []
+    parsed = yaml.load(rest, Loader=yaml.BaseLoader) if rest else []
     return list(parsed) if isinstance(parsed, (list, tuple)) else [parsed]
 
 
@@ -520,7 +554,7 @@ def _mask_expr(rule: ValidationRule) -> str | None:
     return None
 
 
-def _emit_validations(rules: list[ValidationRule]) -> list[str]:
+def _emit_validations(rules: list[ValidationRule], unsupported: list[str]) -> list[str]:
     """Emit ALL rules evaluated against one snapshot, then remove the union once.
 
     Mirrors :func:`cleanframe.validate.apply_validations`: every rule's pass-mask is
@@ -536,14 +570,20 @@ def _emit_validations(rules: list[ValidationRule]) -> list[str]:
         expr = _mask_expr(rule)
         label = f"{rule.column}:{rule.check}"
         if expr is None:
-            lines.append(f"    # NOTE: validation {label} (custom check) not reproduced by codegen")
+            unsupported.append(f"validation {label}")
+            lines.append(
+                f"    # NOTE: validation {_comment(label)} (custom check) not reproduced"
+            )
             continue
-        lines.append(f"    _pass{idx} = ({expr}).astype(bool)  # {label} (on_fail={rule.on_fail})")
+        lines.append(
+            f"    _pass{idx} = ({expr}).astype(bool)  # {_comment(label)} "
+            f"(on_fail={rule.on_fail})"
+        )
         if rule.on_fail in ("quarantine", "drop"):
             lines.append(f"    _remove = _remove | ~_pass{idx}")
         elif rule.on_fail == "error":
             lines.append(f"    if (~_pass{idx}).any():")
-            lines.append(f"        raise ValueError('validation failed: {label}')")
+            lines.append(f"        raise ValueError({f'validation failed: {label}'!r})")
         elif rule.on_fail == "null":
             null_targets.append((idx, rule.column))
         # warn -> reported only; nothing to enforce here
@@ -555,8 +595,22 @@ def _emit_validations(rules: list[ValidationRule]) -> list[str]:
     return lines
 
 
-def generate_code(recipe: Recipe, func_name: str = "clean") -> str:
-    """Render ``recipe`` to a standalone pandas module defining ``func_name(df)``."""
+def generate_code(
+    recipe: Recipe, func_name: str = "clean", *, allow_partial: bool = False
+) -> str:
+    """Render ``recipe`` to a standalone pandas module defining ``func_name(df)``.
+
+    Raises :class:`~cleanframe.errors.CleanFrameError` when the recipe uses a custom
+    op or check the exporter cannot reproduce, because silently dropping a step would
+    make the exported code disagree with the executor. Pass ``allow_partial=True`` to
+    accept a partial export whose gaps are marked with ``# NOTE`` comments.
+    """
+    if not isinstance(recipe, Recipe):
+        raise CleanFrameError(
+            f"generate_code expects a Recipe, got {type(recipe).__name__}. Load it with "
+            "cleanframe.Recipe.load() first."
+        )
+    unsupported: list[str] = []
     lines: list[str] = [_DOC_AND_IMPORTS, _constants_source(), _HELPERS, ""]
     lines.append(f"def {func_name}(df):")
     lines.append('    """Clean a DataFrame according to the exported recipe. Returns a new frame."""')
@@ -566,9 +620,9 @@ def generate_code(recipe: Recipe, func_name: str = "clean") -> str:
         if not col_recipe.ops and not col_recipe.rename_to:
             continue
         lines.append("")
-        lines.append(f"    # --- {col_recipe.source} ---")
+        lines.append(f"    # --- {_comment(col_recipe.source)} ---")
         for op in col_recipe.ops:
-            lines.extend(_emit_column_op(op, col_recipe.source))
+            lines.extend(_emit_column_op(op, col_recipe.source, unsupported))
 
     renames = {c.source: c.rename_to for c in recipe.columns if c.rename_to}
     if renames:
@@ -595,11 +649,17 @@ def generate_code(recipe: Recipe, func_name: str = "clean") -> str:
 
     if recipe.validations:
         lines.append("")
-        lines.extend(_emit_validations(recipe.validations))
+        lines.extend(_emit_validations(recipe.validations, unsupported))
 
     lines.append("")
     lines.append("    return df")
     lines.append("")
+    if unsupported and not allow_partial:
+        raise CleanFrameError(
+            "Cannot export this recipe as standalone pandas: "
+            f"{'; '.join(unsupported)} has no code equivalent. Pass allow_partial=True "
+            "to export the rest with the gaps marked."
+        )
     return "\n".join(lines)
 
 
