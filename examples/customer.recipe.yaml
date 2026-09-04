@@ -70,6 +70,7 @@ validate:
   on_fail: quarantine
   values:
   - Bangalore
+  - Bengaluru
   - Mumbai
   - Delhi
 - column: email
@@ -82,7 +83,7 @@ validate:
   check: valid_phone
   on_fail: quarantine
 meta:
-  created_with: cleanframe 0.1.0
+  created_with: cleanframe 0.3.0
   generated_by: rules
   mode: auto
   notes:

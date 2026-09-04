@@ -75,6 +75,8 @@ class CellDiff:
     truncated: bool = False
     #: Total cells that changed, including those not stored when truncated.
     total_changed_cells: int = 0
+    #: Every column with at least one change, including changes beyond the cap.
+    changed_column_names: list[str] = field(default_factory=list)
 
     # -- summaries -------------------------------------------------------
     @property
@@ -105,7 +107,7 @@ class CellDiff:
     def summary(self) -> dict[str, Any]:
         return {
             "changed_cells": self.changed_cells,
-            "changed_columns": len(self.changed_columns),
+            "changed_columns": len(self.changed_column_names or self.changed_columns),
             "added_columns": list(self.added_columns),
             "removed_columns": list(self.removed_columns),
             "renamed_columns": dict(self.renamed_columns),
@@ -159,8 +161,15 @@ class CellDiff:
         text = self.render(max_per_column=max_per_column, color=color, ascii=ascii)
         try:
             print(text, file=out)
-        except UnicodeEncodeError:  # last-resort backstop: force ASCII
-            print(self.render(max_per_column=max_per_column, color=color, ascii=True), file=out)
+        except UnicodeEncodeError:
+            # The glyphs are not the only risk: a currency symbol in the *data* is
+            # unencodable on a cp1252 console too, so replace whatever is left.
+            fallback = self.render(max_per_column=max_per_column, color=color, ascii=True)
+            encoding = getattr(out, "encoding", None) or "ascii"
+            print(
+                fallback.encode(encoding, errors="replace").decode(encoding, errors="replace"),
+                file=out,
+            )
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         s = self.summary()
@@ -245,6 +254,8 @@ def compute_diff(
         changed_mask = _changed_mask(before_series, after_series)
         changed_ids = after_series.index[changed_mask.to_numpy()]
         total += int(len(changed_ids))
+        if len(changed_ids) and out_col not in diff.changed_column_names:
+            diff.changed_column_names.append(out_col)
 
         # Cap-aware bulk extraction: slice to the remaining budget FIRST, then pull
         # before/after in one vectorised call each (avoids per-cell .loc — ~44x).

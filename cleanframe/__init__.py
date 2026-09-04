@@ -29,10 +29,12 @@ from .drift import DriftFinding, DriftReport, detect_drift
 from .errors import (
     BudgetExceeded,
     CleanFrameError,
+    CleanFrameWarning,
     DriftError,
     ExecutionError,
     LLMError,
     OpError,
+    OutputError,
     RecipeError,
     SchemaError,
     ValidationFailure,
@@ -154,8 +156,10 @@ __all__ = [
     "StreamSummary",
     # errors
     "CleanFrameError",
+    "CleanFrameWarning",
     "RecipeError",
     "OpError",
+    "OutputError",
     "ExecutionError",
     "ValidationFailure",
     "DriftError",

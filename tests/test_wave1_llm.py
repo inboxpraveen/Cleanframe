@@ -36,11 +36,31 @@ def _clean_with(client) -> cf.CleanResult:
 
 
 # --- L1/L4: any LLM failure must fall back to rules, never crash the pipeline --
-def test_malformed_llm_recipe_falls_back():
-    """A recipe that parses as JSON but fails validation (replace missing pattern)
-    must fall back to rules, not raise a raw KeyError/RecipeError."""
-    bad = json.dumps({"version": 1, "columns": {"Amount": {"ops": [{"replace": {"repl": "x"}}]}}})
+def test_unusable_llm_op_is_dropped_not_fatal():
+    """One unloadable op (replace without a pattern) must not cost the whole plan.
+
+    It is removed and recorded, so the rest of the model's recipe still runs and the
+    omission is visible — the pipeline never sees an unvalidated op either way.
+    """
+    bad = json.dumps(
+        {
+            "version": 1,
+            "columns": {
+                "Amount": {"ops": [{"replace": {"repl": "x"}}]},
+                "Email": {"ops": ["normalize_email"]},
+            },
+        }
+    )
     result = _clean_with(_Client(text=bad))
+    assert "llm_fallback" not in result.recipe.meta
+    assert result.recipe.meta["generated_by"].startswith("llm:")
+    assert any("replace" in note for note in result.recipe.meta["llm_dropped"])
+    assert [op.name for op in result.recipe.column("Email").ops] == ["normalize_email"]
+
+
+def test_structurally_broken_llm_recipe_falls_back():
+    """A response that is not a recipe at all still degrades to the rules planner."""
+    result = _clean_with(_Client(text=json.dumps({"version": 99, "columns": {}})))
     assert "llm_fallback" in result.recipe.meta
 
 
@@ -73,8 +93,21 @@ def test_array_form_ops_are_parsed():
 
 # --- L4: parse_recipe_json wraps all failures as LLMError ---------------------
 def test_parse_recipe_json_wraps_validation_error():
-    with pytest.raises(LLMError):
-        parse_recipe_json(json.dumps({"version": 1, "columns": {"a": {"ops": [{"cast": {}}]}}}))
+    for payload in (
+        {"version": 99, "columns": {}},
+        {"version": 1, "unknown_section": {}},
+        ["not", "a", "mapping"],
+    ):
+        with pytest.raises(LLMError):
+            parse_recipe_json(json.dumps(payload))
+
+
+def test_parse_recipe_json_drops_an_unusable_op_and_records_it():
+    recipe = parse_recipe_json(
+        json.dumps({"version": 1, "columns": {"a": {"ops": ["lowercase", {"cast": {}}]}}})
+    )
+    assert [op.name for op in recipe.column("a").ops] == ["lowercase"]
+    assert any("cast" in note for note in recipe.meta["llm_dropped"])
 
 
 # --- H12: constant-column raw value must not leak into the LLM metadata --------

@@ -20,15 +20,24 @@ Profile, plan, and clean.
 | `target_schema` / `schema` | Schema \| path \| dict | `None` | Drives mapping + validations |
 | `llm` | `None` \| `"provider/model"` \| client | `None` | Rules-only when omitted |
 | `mode` | `"review"` \| `"auto"` \| `"strict"` | `"review"` | |
-| `options` | dict | `{}` | Detector knobs + `max_diff_changes` |
+| `options` | `dict` \| `None` | `None` | Detector knobs + `max_diff_changes` |
+| `planner` | Planner \| `None` | `None` | Custom planner object with a `.plan()` method |
 | `max_tokens_budget` | int \| None | `None` | Hard LLM token cap |
 | `llm_exposure` | `"metadata"` \| `"sample"` \| `"none"` | `"metadata"` | What the model may see |
-| `sheet` | `str` \| `int` \| `None` | `None` | Excel sheet name / 0-based index (file input) |
+| `llm_fallback` | `bool` | `True` | `False` raises instead of degrading to the rules planner when an LLM call fails |
+| `source` | `str` \| `None` | `None` | Label recorded in the recipe / report for a DataFrame input |
+| `sheet` | `str` \| `int` \| `None` | `None` | Excel sheet name, or 0-based index (file input) |
 | `columns` | `list[str]` \| `None` | `None` | `usecols` filter — keeps file order, not a reorder |
-| `nrows` / `skiprows` | `int` \| `None` | `None` | Row slice (file input); diff `row_id` is slice-relative |
+| `nrows` | `int` \| `None` | `None` | Read only the first N data rows (file input) |
+| `skiprows` | `int` \| `list[int]` \| `None` | `None` | Data rows to drop — an int drops the first N and keeps the header, a list names 1-based data rows. Diff `row_id` is slice-relative |
 | `correct_format` | `bool` | `True` | CSV encoding + delimiter auto-detect, pinned to `read:`; ambiguous delimiter raises (CLI `--no-correct`) |
+| `text` | `bool` | `False` | Read every field verbatim — keeps leading zeros, literal `NA`/`None` text, `1e5` exact |
+| `sep` | `str` \| `None` | `None` | Field delimiter, overriding auto-detection |
+| `encoding` | `str` \| `None` | `None` | File encoding, overriding auto-detection |
 
-`sheet` / `columns` / `nrows` / `skiprows` are also accepted by `report`, `apply_recipe`, `infer_schema`; `correct_format` by `report`. On a DataFrame input `columns` projects while `sheet` / `nrows` / `skiprows` raise (file-only).
+`sheet` / `columns` / `nrows` / `skiprows` are also accepted by `report`, `apply_recipe`, `suggest_update`, `infer_schema`; `text` / `sep` / `encoding` by `report`, `apply_recipe`, `infer_schema`; `correct_format` by `report` and `infer_schema`. On a DataFrame input `columns` projects while `sheet` / `nrows` / `skiprows` raise (file-only).
+
+`llm_exposure="none"` plans with the rules planner and makes no network call, even when `llm=` is set.
 
 ```python
 result = cf.clean(df, target_schema="schema.yaml", mode="auto")
@@ -42,6 +51,8 @@ result.log
 result.code          # CodeArtifact — standalone pandas
 ```
 
+`result.dataframe` is indexed `0..n-1` — the stable positional row ids the diff and quarantine refer to.
+
 Useful `options` keys:
 
 | Key | Effect |
@@ -49,18 +60,21 @@ Useful `options` keys:
 | `max_diff_changes` | Cap stored cell diffs (`None` = unlimited; default 100_000) |
 | `dayfirst` | Date ambiguity preference for the dates detector |
 | `phone_country_code` | Default country code for phone normalisation |
+| `region` | Alias for `phone_country_code` |
 | `category_map` | Seed alias map `{column: {variant: canonical}}` |
+| `rename_columns` | `False` skips the automatic snake_case pass over every column; detector- and schema-proposed renames still apply (default `True`) |
 
 ---
 
 ## `cf.report(data, **kwargs) → Report`
 
-Profile + detect only; returns an HTML report object.
+Profile + detect only; returns an HTML report object. Takes `schema`, `options`, `source`, the selection arguments, and `correct_format` / `text` / `sep` / `encoding`.
 
 ```python
 rep = cf.report("data.csv")
 rep.save("report.html")
 html = rep.html
+rep.quality
 ```
 
 ---
@@ -72,20 +86,25 @@ Replay without re-planning.
 | Parameter | Default | Notes |
 |-----------|---------|-------|
 | `check_drift` | `True` | Compare fingerprint |
-| `on_drift` | `"error"` | `"error"` \| `"warn"` \| `"ignore"` |
+| `on_drift` | `"error"` | `"error"` \| `"warn"` \| `"ignore"`; anything else raises rather than silently disabling the guard |
 | `mode` | `"review"` | `strict` always raises on drift |
+| `source` | `None` | Label for a DataFrame input |
+| `sheet` / `columns` / `nrows` / `skiprows` | `None` | Override the recipe's recorded `read:` selection |
+| `text` / `sep` / `encoding` | `False` / `None` / `None` | Override the recipe's recorded `read:` format |
+
+The recipe's `read:` binding is re-applied when `data` is a path; explicit call arguments win over it. The returned frame is indexed `0..n-1`.
 
 ---
 
-## `cf.suggest_update(data, recipe, out=None) → (Recipe, DriftReport)`
+## `cf.suggest_update(data, recipe, out=None, **kwargs) → (Recipe, DriftReport)`
 
-Mechanical drift patches (repoint renamed columns, extend date formats).
+Mechanical drift patches (repoint renamed columns, extend date formats). Also takes `source`, `sheet`, `columns`, `nrows`, `skiprows`; the recipe's recorded `read:` binding is re-applied so a workbook or `;`-separated file is read the way it was planned. `out=` writes the patched recipe.
 
 ---
 
-## `cf.infer_schema(data, name=None) → Schema`
+## `cf.infer_schema(df, name=None, **kwargs) → Schema`
 
-Draft schema from observed types / categories.
+Draft schema from observed types / categories. Takes the selection arguments plus `correct_format`, `text`, `sep`, `encoding`.
 
 ---
 
@@ -95,13 +114,19 @@ Low-level deterministic replay (used by `clean` / `apply_recipe`).
 
 ---
 
+## `cf.generate_code(recipe, func_name="clean", *, allow_partial=False) → str`
+
+Render a recipe to a standalone pandas module defining `func_name(df)`. Raises when the recipe uses a custom op or check the exporter cannot reproduce; `allow_partial=True` accepts a partial export whose gaps are marked with `# NOTE` comments.
+
+---
+
 ## Multi-sheet workbooks
 
 Clean every sheet of an `.xlsx` independently — one `Recipe` + diff per sheet.
 
 | Call | Returns | Notes |
 |------|---------|-------|
-| `cf.clean_workbook(data, *, sheets=None, target_schema=None, schema=None, llm=None, mode="review", options=None)` | `WorkbookResult` | `sheets=` limits which tabs |
+| `cf.clean_workbook(data, *, sheets=None, target_schema=None, schema=None, llm=None, mode="review", options=None, **clean_kwargs)` | `WorkbookResult` | `sheets=` limits which tabs; `**clean_kwargs` forward to `clean` |
 | `cf.apply_workbook(data, recipe, *, mode="review", check_drift=True, on_drift="error")` | `WorkbookResult` | Replay a `WorkbookRecipe` across sheets |
 | `cf.read_workbook(path, sheets=None)` | `dict[str, DataFrame]` | |
 | `cf.load_recipe(path)` | `Recipe` \| `WorkbookRecipe` | Auto-detects a `sheets:` block |
@@ -109,13 +134,16 @@ Clean every sheet of an `.xlsx` independently — one `Recipe` + diff per sheet.
 ```python
 wb = cf.clean_workbook("book.xlsx", target_schema="schema.yaml")
 wb.sheets            # dict name -> CleanResult
-wb.untouched         # sheet names left unchanged
-wb.frames            # dict name -> DataFrame (cleaned or untouched)
+wb.untouched         # dict name -> DataFrame, the sheets left unchanged
+wb.frames            # dict name -> DataFrame, cleaned sheets only
+wb.sheet_order       # sheet names in workbook order
 wb.recipe            # WorkbookRecipe
 wb.summary()
 wb.save_recipe("book.recipe.yaml")
 wb.save_data("out.xlsx")             # every sheet to one .xlsx; refuses to overwrite the source (overwrite=True to force)
 ```
+
+`save_data` writes cleaned sheets where cleaned and the untouched originals otherwise, in `sheet_order`.
 
 `WorkbookRecipe` is one reviewable YAML — `version: 2` with a top-level `sheets:` mapping (sheet name -> a normal recipe); exposes `.sheets`, `.save(path)`, `.load(path)`. A per-sheet recipe never carries its own `read.sheet` — the dict key is the sheet.
 
@@ -151,9 +179,23 @@ CLI: `cleanframe apply FILE --recipe R --chunksize N [--out O]` streams; global-
 
 ```python
 cf.read_frame("data.parquet")
+cf.read_frame("data.csv", text=True)          # every field verbatim
+cf.read_frame("data.csv", blank_lines=2)      # empty lines above the header
 cf.write_frame(df, "out.csv")                 # formula-safe by default
 cf.write_frame(df, "out.csv", sanitize_csv=False)
+cf.write_frame(df, "out.csv", source="in.csv", overwrite=True)
 ```
+
+| Parameter | Function | Default | Notes |
+|-----------|----------|---------|-------|
+| `sheet` / `columns` / `nrows` / `skiprows` | `read_frame` | `None` | As for `clean` |
+| `blank_lines` | `read_frame` | `0` | Empty lines to skip above the header row |
+| `text` | `read_frame` | `False` | Read every field as a string (CSV/Excel) |
+| `sanitize_csv` | `write_frame` | `True` | Escape cells that look like spreadsheet formulas |
+| `source` | `write_frame` | `None` | The path the data was read from |
+| `overwrite` | `write_frame` | `False` | Required to write back over `source` |
+
+`write_frame` refuses to overwrite the file named by `source=` unless `overwrite=True`, and writes through a temporary sibling that is moved into place, so a failure leaves the previous file intact rather than truncated.
 
 ---
 
@@ -174,7 +216,50 @@ See [Detectors & ops](detectors-and-ops.md) and [`CONTRIBUTING.md`](../CONTRIBUT
 
 ---
 
+## Other exports
+
+The remaining names in `cf.__all__`:
+
+| Name | What it is |
+|------|------------|
+| `__version__` | Installed version string |
+| `Mode` | Enum of `review` / `auto` / `strict` |
+| `Severity` | Ordered severity for detected issues and validation results |
+| `Op` | One step of a recipe: an op `name` plus its `params` |
+| `LLMExposure` | Enum of how much data an LLM planner may see: `none` / `metadata` / `sample` |
+| `Issue` | One detected problem, optionally with a proposed fix |
+| `Issues` | Ordered, list-like collection of `Issue` (`result.issues`) |
+| `Proposal` | A replayable fix for an issue: an optional rename plus ops |
+| `DetectorContext` | What a detector receives: `df`, `series`, `column`, `profile`, `column_profile`, `schema`, `options` |
+| `run_detectors(df, *, profile=, schema=, options=, only=)` | Run every applicable detector and return the aggregated `Issues` |
+| `list_detectors()` | Registered detector names |
+| `list_ops(scope=None)` | Registered op names, optionally filtered to `column` or `frame` |
+| `list_validators()` | Registered validator names |
+| `profile_dataframe(df)` | Profile every column plus frame-level facts (row count, duplicate rows) |
+| `DataFrameProfile` | The column profiles plus those frame-level facts |
+| `ColumnProfile` | Read-only statistics and a semantic-type guess for one column |
+| `ColumnRecipe` | The plan for one source column: an optional rename plus ordered ops |
+| `ValidationRule` | One post-clean check with a failure policy |
+| `SchemaColumn` | One column of a target schema: name, logical type, constraints |
+| `RulesPlanner` | Deterministic planner — no LLM, no network; the default path |
+| `LLMPlanner` | Planner that asks an LLM for the recipe |
+| `get_client(spec)` | Resolve a `"provider/model"` string to an LLM client |
+| `list_providers()` | Canonical LLM provider names |
+| `plan_recipe(df, ...)` | Profile + detect + plan in one call, rules planner by default |
+| `CellDiff` | Structured record of everything a recipe changed (`result.diff`) |
+| `CellChange` | One change: `row_id`, `column`, `before`, `after` |
+| `compute_diff(original, cleaned, lineage, ...)` | Build a `CellDiff` from a before/after pair |
+| `detect_drift(df, recipe, *, source=None)` | Compare an incoming frame against a recipe's expectations |
+| `DriftFinding` | One drift observation: `kind`, `message`, `severity`, `column`, `suggestion`, `evidence` |
+| `quality_score(profile, issues)` | Score a profile + issues into a `QualityScore` |
+| `QualityScore` | `score`, `grade`, `label`, `color`, `penalty` (`result.quality`) |
+| `StreamSummary` | Counts from a streamed replay (no cell-level diff is kept) |
+
+---
+
 ## Errors
+
+`CleanFrameError` is the base class for every error CleanFrame raises deliberately, so `except cleanframe.CleanFrameError` catches all of them without swallowing unrelated bugs.
 
 | Exception | When |
 |-----------|------|
@@ -182,7 +267,18 @@ See [Detectors & ops](detectors-and-ops.md) and [`CONTRIBUTING.md`](../CONTRIBUT
 | `RecipeError` | Invalid recipe / check |
 | `OpError` | Op params / execution |
 | `ExecutionError` | Strict missing column, rename clash |
-| `ValidationFailure` | `on_fail=error` / strict |
-| `DriftError` | Schema drift on apply |
+| `ValidationFailure` | `on_fail=error` / strict; carries `.failures` |
+| `DriftError` | Schema drift on apply; carries `.report` |
 | `SchemaError` | Bad schema YAML |
-| `LLMError` / `BudgetExceeded` | LLM path (may fall back to rules) |
+| `LLMError` | LLM path (may fall back to rules) |
+| `BudgetExceeded` | Subclass of `LLMError` — planning would exceed `max_tokens_budget` |
+| `OutputError` | An output file could not be written (bad path, permissions, missing engine, or an in-place overwrite without `overwrite=True`) |
+
+## Warnings
+
+Every advisory CleanFrame emits uses the `CleanFrameWarning` category, so callers can filter them in one line:
+
+```python
+import warnings
+warnings.simplefilter("ignore", cleanframe.CleanFrameWarning)
+```

@@ -1,5 +1,7 @@
 # Target schema for examples/messy_customers.csv
 # Infer with: cleanframe infer-schema examples/messy_customers.csv -o examples/customer.schema.yaml
+# Bangalore and Bengaluru are both listed: mapping one spelling to the other is
+# domain knowledge, so the rules planner leaves it to a human or the LLM planner.
 name: customer
 columns:
   customer_name:
@@ -19,7 +21,7 @@ columns:
   city:
     dtype: category
     aliases: ["City"]
-    allowed_values: [Bangalore, Mumbai, Delhi]
+    allowed_values: [Bangalore, Bengaluru, Mumbai, Delhi]
   email:
     dtype: email
     required: true

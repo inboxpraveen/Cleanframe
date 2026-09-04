@@ -15,6 +15,7 @@ env/
 .env
 .env.*
 !.env.example
+llm-help.md
 *.pem
 *.key
 credentials.json
@@ -82,3 +83,19 @@ $RECYCLE.BIN/
 /output/
 /tmp/
 /temp/
+
+# Artifacts CleanFrame writes next to an input file. The sample recipe and schema
+# under examples/ are committed on purpose and are already tracked.
+*.report.html
+*.clean.csv
+*.clean.tsv
+*.clean.xlsx
+*.clean.json
+*.clean.parquet
+*.quarantine.csv
+*.patched.yaml
+*.cf-tmp
+examples/messy_customers.recipe.yaml
+examples/messy_customers.schema.yaml
+!examples/customer.recipe.yaml
+!examples/customer.schema.yaml

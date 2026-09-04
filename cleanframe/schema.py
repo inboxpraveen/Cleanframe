@@ -19,7 +19,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from ._util import read_text, snake_case, write_text
+from ._util import load_yaml, read_text, snake_case, write_text
 from .errors import SchemaError
 from .profile import COMMON_DATE_FORMATS, _name_hint, profile_dataframe
 
@@ -47,18 +47,36 @@ _MAX_ALLOWED_VALUES = 50
 #: otherwise be silently ignored (no cast, no warning), so it is rejected at load.
 _VALID_DTYPES = frozenset(
     {
-        "string", "text", "integer", "int", "float", "number", "boolean", "bool",
-        "date", "datetime", "email", "phone", "url", "category", "id",
+        "string", "str", "text", "integer", "int", "float", "number", "boolean",
+        "bool", "date", "datetime", "email", "phone", "url", "category", "id",
     }
 )
 
 
-def _check_dtype(dtype: str, column: str) -> None:
-    if dtype.strip().lower() not in _VALID_DTYPES:
+#: Spellings that mean the same logical type. Normalised at load so the planner,
+#: which matches on the canonical name, cannot silently skip a cast.
+_DTYPE_ALIASES = {
+    "int": "integer",
+    "number": "float",
+    "text": "string",
+    "bool": "boolean",
+    "id": "string",
+    "str": "string",
+}
+
+
+def _canonical_dtype(dtype: Any, column: str) -> str:
+    if not isinstance(dtype, str):
+        raise SchemaError(
+            f"Schema column {column!r} dtype must be a string, got {type(dtype).__name__}."
+        )
+    name = dtype.strip().lower()
+    if name not in _VALID_DTYPES:
         raise SchemaError(
             f"Schema column {column!r} has unknown dtype {dtype!r}. "
             f"Valid dtypes: {', '.join(sorted(_VALID_DTYPES))}."
         )
+    return _DTYPE_ALIASES.get(name, name)
 
 
 @dataclass
@@ -98,21 +116,24 @@ class SchemaColumn:
         if raw is None:
             return cls(name=name)
         if isinstance(raw, str):  # shorthand: `col: float`
-            _check_dtype(raw, name)
-            return cls(name=name, dtype=raw)
+            return cls(name=name, dtype=_canonical_dtype(raw, name))
         if not isinstance(raw, dict):
             raise SchemaError(f"Schema column {name!r} must be a mapping or a dtype string.")
-        _check_dtype(str(raw.get("dtype", "string")), name)
+        aliases = raw.get("aliases", []) or []
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        if not isinstance(aliases, (list, tuple)):
+            raise SchemaError(f"Schema column {name!r} aliases must be a list of names.")
         return cls(
             name=name,
-            dtype=str(raw.get("dtype", "string")),
+            dtype=_canonical_dtype(raw.get("dtype", "string"), name),
             required=bool(raw.get("required", False)),
             unique=bool(raw.get("unique", False)),
             allowed_values=raw.get("allowed_values"),
             date_formats=raw.get("date_formats"),
             min=raw.get("min"),
             max=raw.get("max"),
-            aliases=list(raw.get("aliases", []) or []),
+            aliases=[str(a) for a in aliases],
         )
 
 
@@ -152,7 +173,9 @@ class Schema:
     @classmethod
     def from_dict(cls, raw: dict) -> Schema:
         if not isinstance(raw, dict):
-            raise SchemaError("A schema must be a mapping at the top level.")
+            raise SchemaError(
+                f"A schema must be a mapping at the top level, got {type(raw).__name__}."
+            )
         raw_cols = raw.get("columns", raw if "columns" not in raw and "version" not in raw else {})
         if not isinstance(raw_cols, dict):
             raise SchemaError("Schema 'columns' must be a mapping of name -> spec.")
@@ -164,7 +187,9 @@ class Schema:
         path = Path(path)
         if not path.exists():
             raise SchemaError(f"Schema not found: {path}")
-        return cls.from_dict(yaml.safe_load(read_text(path)))
+        if path.is_dir():
+            raise SchemaError(f"Schema path is a directory, not a file: {path}")
+        return cls.from_dict(load_yaml(read_text(path), error=SchemaError, what="schema"))
 
 
 def _infer_date_formats(series: pd.Series) -> list[str]:

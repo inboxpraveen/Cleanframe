@@ -17,7 +17,7 @@ import pandas as pd
 
 from ._util import DEFAULT_MAX_DIFF_CHANGES
 from .diff import CellDiff, compute_diff
-from .errors import ExecutionError
+from .errors import CleanFrameWarning, ExecutionError
 from .ops import apply_column_op, apply_frame_op
 from .recipe import Recipe
 from .types import Mode
@@ -83,6 +83,7 @@ def execute(
     original = work[snapshot_cols].copy()
     log: list[str] = []
     dropped_rows: list[tuple[int, str]] = []
+    nulled: dict[str, int] = {}
 
     # source_of[current_column] -> original source column, or None if derived.
     source_of: dict[str, str | None] = {str(c): str(c) for c in work.columns}
@@ -98,11 +99,13 @@ def execute(
             warnings.warn(
                 f"CleanFrame: skipped recipe column {src!r} — not present in the data. "
                 "Use mode='strict' to fail instead, or re-plan / suggest_update for drift.",
+                CleanFrameWarning,
                 stacklevel=2,
             )
             continue
 
         series = work[src]
+        na_before = int(series.isna().sum())
         emitted: dict[str, pd.Series] = {}
         for op in col_recipe.ops:
             result = apply_column_op(op, series)
@@ -114,6 +117,9 @@ def execute(
                     )
                 emitted[name] = extra
         work[src] = series
+        na_after = int(series.isna().sum())
+        if na_after > na_before:
+            nulled[src] = na_after - na_before
         for name, extra in emitted.items():
             if name in source_of and source_of[name] is None:
                 # Another op this run already emitted this derived column — two ops
@@ -134,6 +140,12 @@ def execute(
             # lineage so every clobbered cell is tracked in the diff, and an
             # idempotent re-emit of identical values registers as no change.
             log.append(f"{src}: emitted derived column {name!r}")
+
+    if nulled:
+        detail = ", ".join(f"{col} ({n})" for col, n in sorted(nulled.items()))
+        msg = f"values became missing because an op could not parse them: {detail}"
+        log.append(msg)
+        warnings.warn("CleanFrame: " + msg, CleanFrameWarning, stacklevel=2)
 
     # -- Phase 2: renames -----------------------------------------------
     rename_map = {
@@ -202,7 +214,7 @@ def execute(
             "changed cells (raise max_diff_changes or pass None for a full lineage)"
         )
         log.append(msg)
-        warnings.warn("CleanFrame: " + msg, stacklevel=2)
+        warnings.warn("CleanFrame: " + msg, CleanFrameWarning, stacklevel=2)
 
     return ExecutionResult(
         dataframe=work,

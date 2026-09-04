@@ -146,6 +146,8 @@ class RulesPlanner:
             if not issue.has_fix or issue.confidence < threshold:
                 continue
             proposal = issue.proposal
+            if proposal is None:
+                continue
             for op in proposal.ops:
                 if get_op(op.name).scope == "frame":
                     frame_ops.append(op)

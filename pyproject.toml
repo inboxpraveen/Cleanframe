@@ -1,14 +1,16 @@
 [build-system]
-requires = ["hatchling>=1.18"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cleanframe"
-version = "0.2.0"
+# The PyPI distribution is "cleanframe-engine"; the import package stays "cleanframe".
+name = "cleanframe-engine"
+dynamic = ["version"]
 description = "The reproducible data-cleaning engine for Python. AI writes the recipe once; the recipe runs forever — deterministic, diffable, reviewable."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "CleanFrame contributors" }]
 keywords = [
     "data-cleaning",
@@ -22,7 +24,6 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -49,6 +50,8 @@ dev = [
     "pytest-cov>=4.0",
     "openpyxl>=3.0",
     "ruff>=0.4",
+    "mypy>=1.8",
+    "types-PyYAML>=6.0",
 ]
 all = ["openpyxl>=3.0", "pyarrow>=12.0", "anthropic>=0.30", "openai>=1.0"]
 
@@ -62,8 +65,27 @@ Documentation = "https://github.com/inboxpraveen/Cleanframe/wiki"
 Issues = "https://github.com/inboxpraveen/Cleanframe/issues"
 Changelog = "https://github.com/inboxpraveen/Cleanframe/blob/main/CHANGELOG.md"
 
+[tool.hatch.version]
+path = "cleanframe/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["cleanframe"]
+
+# An allow-list, so an untracked file in the working tree can never ship in a release.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "cleanframe",
+    "tests",
+    "examples",
+    "docs",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+    "pyproject.toml",
+]
+exclude = ["docs/assets"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -71,6 +93,11 @@ addopts = "-q"
 filterwarnings = [
     "error::DeprecationWarning:cleanframe.*",
 ]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+files = ["cleanframe"]
 
 [tool.ruff]
 line-length = 100

@@ -21,6 +21,7 @@ Adding an op is intentionally a ~15-line affair — see ``CONTRIBUTING.md``.
 
 from __future__ import annotations
 
+import inspect
 import math
 import re
 from collections.abc import Callable
@@ -58,6 +59,11 @@ class OpSpec:
     coerce: Callable[[Any], dict] | None = None
     compact: Callable[[dict], Any] | None = None
     doc: str = ""
+    #: Parameter names a recipe may set for this op (plus any documented aliases).
+    known_params: frozenset[str] = frozenset()
+    #: True when a mapping *is* the payload (``normalize_values``), so its keys
+    #: are user data rather than parameter names.
+    free_form: bool = False
 
 
 OP_REGISTRY: dict[str, OpSpec] = {}
@@ -69,6 +75,8 @@ def register_op(
     scope: str = "column",
     coerce: Callable[[Any], dict] | None = None,
     compact: Callable[[dict], Any] | None = None,
+    aliases: tuple[str, ...] = (),
+    free_form: bool = False,
 ) -> Callable[[Callable], Callable]:
     """Register a transform under ``name``. See module docstring for scopes.
 
@@ -87,10 +95,25 @@ def register_op(
         OP_REGISTRY[name] = OpSpec(
             name=name, func=func, scope=scope, coerce=coerce, compact=compact,
             doc=func.__doc__ or "",
+            known_params=frozenset(_signature_params(func)) | frozenset(aliases),
+            free_form=free_form,
         )
         return func
 
     return decorator
+
+
+def _signature_params(func: Callable) -> set[str]:
+    """Keyword parameter names of an op, minus its leading series/frame argument."""
+    try:
+        params = [
+            p
+            for p in inspect.signature(func).parameters.values()
+            if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+        ]
+    except (TypeError, ValueError):  # pragma: no cover - builtins without signatures
+        return set()
+    return {p.name for p in params[1:]}
 
 
 def _prune(params: dict, defaults: dict) -> dict:
@@ -134,6 +157,13 @@ def normalize_op(name: str, raw_params: Any = None) -> Op:
     (if any) maps that to canonical params.
     """
     spec = get_op(name)
+    if isinstance(raw_params, dict) and not spec.free_form and spec.known_params:
+        unknown = sorted(str(k) for k in raw_params if str(k) not in spec.known_params)
+        if unknown:
+            raise RecipeError(
+                f"Op {name!r} got unknown parameter(s) {unknown}. Valid parameters: "
+                f"{sorted(spec.known_params)}. A misspelled parameter would be ignored."
+            )
     if spec.coerce is not None:
         try:
             params = spec.coerce(raw_params)
@@ -293,13 +323,26 @@ def _coerce_symbols(raw: Any) -> dict:
     if raw is None:
         return {"symbols": []}
     if isinstance(raw, dict):
-        return {"symbols": list(raw.get("symbols", []))}
+        raw = raw.get("symbols", [])
+    if isinstance(raw, str):
+        return {"symbols": [raw]}
     if isinstance(raw, (list, tuple)):
+        bad = [s for s in raw if not isinstance(s, str)]
+        if bad:
+            raise RecipeError(
+                f"Op 'remove_symbols' expects strings, got {bad!r}. Quote them in YAML "
+                "so a number is not treated as the digit to delete."
+            )
         return {"symbols": list(raw)}
-    return {"symbols": [raw]}
+    raise RecipeError(
+        f"Op 'remove_symbols' expects a string or a list of strings, got "
+        f"{type(raw).__name__}."
+    )
 
 
-@register_op("remove_symbols", coerce=_coerce_symbols, compact=lambda p: p.get("symbols", []))
+@register_op(
+    "remove_symbols", coerce=_coerce_symbols, compact=lambda p: p.get("symbols", [])
+)
 def remove_symbols(series: pd.Series, symbols: list[str] | None = None) -> pd.Series:
     """Delete each listed substring from string cells (``["₹", ","]`` etc.)."""
     subs = [str(s) for s in (symbols or [])]
@@ -363,8 +406,13 @@ def _coerce_to_na(raw: Any) -> dict:
     if raw is None:
         return {"tokens": None, "case_insensitive": True}
     if isinstance(raw, dict):
+        tokens = raw.get("tokens")
+        if isinstance(tokens, str):
+            tokens = [tokens]
+        if tokens is not None and not isinstance(tokens, (list, tuple)):
+            raise RecipeError("Op 'to_na' tokens must be a string or a list of strings.")
         return {
-            "tokens": raw.get("tokens"),
+            "tokens": list(tokens) if tokens is not None else None,
             "case_insensitive": bool(raw.get("case_insensitive", True)),
         }
     if isinstance(raw, (list, tuple)):
@@ -471,10 +519,27 @@ def _coerce_normalize_phone(raw: Any) -> dict:
     raise RecipeError("Op 'normalize_phone' expects a country code or mapping.")
 
 
+#: A trailing extension is not part of the number; fusing it corrupts both.
+_PHONE_EXT_RE = re.compile(r"[\s,;]*(?:ext|extn|x|#)\.?\s*\d+\s*$", re.IGNORECASE)
+
+
+def _phone_text(value: Any) -> str:
+    """Stringify a phone cell without inventing digits.
+
+    A phone column holding one blank cell is read as float64, and ``str(9876543210.0)``
+    would append a spurious trailing zero once the dot is stripped.
+    """
+    if isinstance(value, float) and float(value).is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def _normalize_phone_scalar(value: Any, default_cc: str | None) -> Any:
     if _is_na(value):
         return value
-    s = str(value)
+    if isinstance(value, bool):
+        return np.nan
+    s = _PHONE_EXT_RE.sub("", _phone_text(value))
     had_plus = s.strip().startswith("+")
     digits = re.sub(r"\D", "", s)
     if not digits:
@@ -492,6 +557,7 @@ def _normalize_phone_scalar(value: Any, default_cc: str | None) -> Any:
 
 @register_op(
     "normalize_phone",
+    aliases=("country_code", "region"),
     coerce=_coerce_normalize_phone,
     compact=lambda p: _prune(p, {"default_country_code": None}),
 )
@@ -589,13 +655,31 @@ def parse_number(
     return series.map(lambda v: _parse_number_scalar(v, decimal, thousands, syms))
 
 
+#: Every accepted ``cast`` target. A typo here used to load and fail at replay.
+CAST_TARGETS = frozenset(
+    {
+        "float", "float64", "number", "int", "integer", "int64", "string", "str",
+        "text", "bool", "boolean", "datetime", "date", "category",
+    }
+)
+
+
+def _check_cast_target(to: Any) -> str:
+    if not isinstance(to, str) or to.strip().lower() not in CAST_TARGETS:
+        raise RecipeError(
+            f"Op 'cast' has unknown target {to!r}. Valid targets: "
+            f"{', '.join(sorted(CAST_TARGETS))}."
+        )
+    return to
+
+
 def _coerce_cast(raw: Any) -> dict:
     if isinstance(raw, dict):
         if "to" not in raw:
             raise RecipeError("Op 'cast' requires a 'to' target type, e.g. `cast: float`.")
-        return {"to": raw["to"]}
+        return {"to": _check_cast_target(raw["to"])}
     if isinstance(raw, str):
-        return {"to": raw}
+        return {"to": _check_cast_target(raw)}
     raise RecipeError("Op 'cast' expects a target type, e.g. `cast: float`.")
 
 
@@ -642,9 +726,19 @@ def cast(series: pd.Series, to: str) -> pd.Series:
     raise OpError(f"Unknown cast target {to!r}.")
 
 
+def _coerce_round(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        raw = raw.get("decimals", 0)
+    if raw is None:
+        raw = 0
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        raise RecipeError(f"Op 'round' expects a number of decimals, got {raw!r}.")
+    return {"decimals": int(raw)}
+
+
 @register_op(
     "round",
-    coerce=lambda raw: {"decimals": int(raw if raw is not None else 0)},
+    coerce=_coerce_round,
     compact=lambda p: p.get("decimals", 0),
 )
 def round_op(series: pd.Series, decimals: int = 0) -> pd.Series:
@@ -661,6 +755,18 @@ def _coerce_parse_date(raw: Any) -> dict:
         raise RecipeError("Op 'parse_date' expects a mapping of parameters.")
     # `allowed` is the README's alias for `formats`.
     formats = raw.get("formats", raw.get("allowed"))
+    if isinstance(formats, str):
+        raise RecipeError(
+            "Op 'parse_date' formats must be a list, e.g. formats: ['%d/%m/%Y'] — a bare "
+            "string would be read one character at a time."
+        )
+    if formats is not None and not isinstance(formats, (list, tuple)):
+        raise RecipeError(
+            f"Op 'parse_date' formats must be a list of strftime patterns, got "
+            f"{type(formats).__name__}."
+        )
+    if formats and any(not isinstance(f, str) for f in formats):
+        raise RecipeError("Op 'parse_date' formats must all be strings.")
     return {
         "formats": list(formats) if formats else None,
         "dayfirst": bool(raw.get("dayfirst", False)),
@@ -681,6 +787,23 @@ def _reconcile_date_formats(formats: list[str], dayfirst: bool) -> list[str]:
         return formats
     drop = _MONTHFIRST_SLASH if dayfirst else _DAYFIRST_SLASH
     return [f for f in formats if f not in drop]
+
+
+def _naive_datetimes(series: pd.Series) -> pd.Series:
+    """Force a parse result to tz-naive ``datetime64[ns]``.
+
+    A value carrying an offset (``2024-01-01T10:00:00Z``) parses to a tz-aware series,
+    which cannot be stored in a tz-naive one: older pandas silently turns the column to
+    ``object`` and the following ``.dt`` access then fails.
+    """
+    if getattr(series.dtype, "tz", None) is not None:
+        return series.dt.tz_convert("UTC").dt.tz_localize(None)
+    if not pd.api.types.is_datetime64_any_dtype(series.dtype):
+        converted = pd.to_datetime(series, errors="coerce", utc=True)
+        if getattr(converted.dtype, "tz", None) is not None:
+            converted = converted.dt.tz_convert("UTC").dt.tz_localize(None)
+        return converted
+    return series
 
 
 def parse_dates_to_datetime(
@@ -708,7 +831,7 @@ def parse_dates_to_datetime(
         mask = result.isna() & series.notna()
         if not mask.any():
             break
-        parsed = pd.to_datetime(series[mask], format=fmt, errors="coerce")
+        parsed = _naive_datetimes(pd.to_datetime(series[mask], format=fmt, errors="coerce"))
         result.loc[mask] = parsed
 
     if flex_fallback:
@@ -721,12 +844,13 @@ def parse_dates_to_datetime(
                 flex = pd.to_datetime(
                     series[remaining], errors="coerce", dayfirst=dayfirst, yearfirst=yearfirst
                 )
-            result.loc[remaining] = flex
-    return result
+            result.loc[remaining] = _naive_datetimes(flex)
+    return _naive_datetimes(result)
 
 
 @register_op(
     "parse_date",
+    aliases=("allowed",),
     coerce=_coerce_parse_date,
     compact=lambda p: _prune(
         p, {"formats": None, "dayfirst": False, "yearfirst": False, "output": "%Y-%m-%d"}
@@ -774,7 +898,12 @@ def _compact_normalize_values(p: dict) -> Any:
     return p.get("map", {})
 
 
-@register_op("normalize_values", coerce=_coerce_normalize_values, compact=_compact_normalize_values)
+@register_op(
+    "normalize_values",
+    coerce=_coerce_normalize_values,
+    compact=_compact_normalize_values,
+    free_form=True,
+)
 def normalize_values(
     series: pd.Series,
     map: dict[Any, Any] | None = None,  # noqa: A002 - matches recipe key name
@@ -824,7 +953,10 @@ def _coerce_extract_currency(raw: Any) -> dict:
         return {"to": raw, "default": None}
     if not isinstance(raw, dict):
         raise RecipeError("Op 'extract_currency' expects a target column name or mapping.")
-    return {"to": raw.get("to"), "default": raw.get("default")}
+    to = raw.get("to")
+    if to is not None and not isinstance(to, str):
+        raise RecipeError("Op 'extract_currency' target column name must be a string.")
+    return {"to": to, "default": raw.get("default")}
 
 
 def _detect_currency_scalar(value: Any, default: str | None) -> Any:
@@ -888,7 +1020,15 @@ def _coerce_dedup(raw: Any) -> dict:
     keep = raw.get("keep", "first")
     if keep is False or str(keep).lower() == "false":
         keep = False
+    if keep not in ("first", "last", False):
+        raise RecipeError(
+            f"Op 'dedup' keep must be 'first', 'last' or false, got {keep!r}."
+        )
     subset = raw.get("subset")
+    if isinstance(subset, str):
+        subset = [subset]
+    if subset is not None and not isinstance(subset, (list, tuple)):
+        raise RecipeError("Op 'dedup' subset must be a column name or a list of names.")
     return {
         "subset": list(subset) if subset else None,
         "keep": keep,
@@ -933,10 +1073,14 @@ def _coerce_drop_columns(raw: Any) -> dict:
     if isinstance(raw, str):
         return {"columns": [raw]}
     if isinstance(raw, (list, tuple)):
-        return {"columns": list(raw)}
-    if isinstance(raw, dict):
-        return {"columns": list(raw.get("columns", []))}
-    raise RecipeError("Op 'drop_columns' expects a column name or list.")
+        cols = list(raw)
+    elif isinstance(raw, dict):
+        cols = list(raw.get("columns", []))
+    else:
+        raise RecipeError("Op 'drop_columns' expects a column name or list.")
+    if any(not isinstance(c, str) for c in cols):
+        raise RecipeError("Op 'drop_columns' expects column names as strings.")
+    return {"columns": cols}
 
 
 @register_op(
@@ -992,15 +1136,26 @@ def parse_unit_scalar(value: Any) -> tuple[float, str] | None:
         return None
 
 
+def _check_unit(to: str) -> str:
+    unit = _UNIT_ALIASES.get(str(to).casefold(), str(to).casefold())
+    if unit not in _UNIT_TO_FAMILY:
+        raise RecipeError(
+            f"Op 'normalize_unit' has unknown target unit {to!r}. Known units: "
+            f"{', '.join(sorted(_UNIT_TO_FAMILY))}."
+        )
+    return unit
+
+
 def _coerce_normalize_unit(raw: Any) -> dict:
     if isinstance(raw, str):
-        return {"to": raw.casefold(), "emit_unit_column": None}
+        return {"to": _check_unit(raw), "emit_unit_column": None}
     raw = raw or {}
     if not isinstance(raw, dict):
         raise RecipeError("Op 'normalize_unit' expects a target unit string or mapping.")
-    to = str(raw.get("to", "g")).casefold()
-    to = _UNIT_ALIASES.get(to, to)
+    to = _check_unit(raw.get("to", "g"))
     emit = raw.get("emit_unit_column")
+    if emit is not None and not isinstance(emit, str):
+        raise RecipeError("Op 'normalize_unit' emit_unit_column must be a column name.")
     return {"to": to, "emit_unit_column": emit}
 
 
@@ -1083,6 +1238,7 @@ __all__ = [
     "apply_frame_op",
     "parse_dates_to_datetime",
     "parse_unit_scalar",
+    "CAST_TARGETS",
     "UNIT_FAMILIES",
     "CURRENCY_SYMBOLS",
     "DEFAULT_NA_TOKENS",

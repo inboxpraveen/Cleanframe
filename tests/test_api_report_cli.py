@@ -106,7 +106,7 @@ def test_cli_apply_stops_on_drift(messy_df, drifted_df, tmp_path, capsys):
     drift_src = _write_csv(drifted_df, tmp_path / "m2.csv")
     out = tmp_path / "should_not_exist.csv"
     rc = main(["apply", drift_src, "--recipe", str(recipe), "--out", str(out)])
-    assert rc == 1
+    assert rc == 3  # stopped on drift
     assert not out.exists()
     captured = capsys.readouterr().out
     assert "Schema drift detected" in captured
@@ -129,7 +129,7 @@ def test_cli_suggest_reports_drift(messy_df, drifted_df, tmp_path):
     main(["clean", src, "--recipe", str(recipe), "--mode", "auto"])
     drift_src = _write_csv(drifted_df, tmp_path / "m2.csv")
     rc = main(["suggest", drift_src, "--recipe", str(recipe)])
-    assert rc == 1  # drift present, not updated
+    assert rc == 3  # drift present, not updated
 
 
 def test_cli_detectors_and_ops():

@@ -83,7 +83,7 @@ def test_cast_int_and_bool_use_nullable():
     ints = col(Op("cast", {"to": "int"}), ["1", "2", None, "3.7"])
     assert ints[0] == 1 and ints[3] == 4 and pd.isna(ints[2])
     bools = col(Op("cast", {"to": "bool"}), ["yes", "No", "1", None, "maybe"])
-    assert bools[0] is True and bools[1] is False and pd.isna(bools[4])
+    assert bool(bools[0]) is True and bool(bools[1]) is False and pd.isna(bools[4])
 
 
 def test_extract_currency_emits_column_without_touching_source():

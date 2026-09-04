@@ -12,6 +12,14 @@ class CleanFrameError(Exception):
     """Base class for all errors raised deliberately by CleanFrame."""
 
 
+class CleanFrameWarning(UserWarning):
+    """Category for every warning CleanFrame raises deliberately.
+
+    Silence the library's advisory output with
+    ``warnings.simplefilter("ignore", cleanframe.CleanFrameWarning)``.
+    """
+
+
 class RecipeError(CleanFrameError):
     """A recipe is malformed, references an unknown op, or fails to load."""
 
@@ -52,3 +60,7 @@ class LLMError(CleanFrameError):
 
 class BudgetExceeded(LLMError):
     """Planning was aborted because it would exceed ``max_tokens_budget``."""
+
+
+class OutputError(CleanFrameError):
+    """An output file could not be written (bad path, permissions, or engine)."""

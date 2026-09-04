@@ -8,24 +8,47 @@
 ## From PyPI
 
 ```bash
-pip install cleanframe
+pip install cleanframe-engine
 ```
+
+The distribution name on PyPI is `cleanframe-engine`; the import package is
+`cleanframe` (`import cleanframe as cf`), and the CLI is `cleanframe` — or
+`python -m cleanframe`, an equivalent alias for every invocation.
 
 ### Extras
 
 | Extra | Installs | Needed for |
 |-------|----------|------------|
-| `excel` | `openpyxl` | `.xlsx` / `.xls` / `.xlsm` |
+| `excel` | `openpyxl` | `.xlsx` / `.xlsm` |
 | `parquet` | `pyarrow` | `.parquet` |
 | `llm` | `anthropic`, `openai` | LLM-assisted planning |
-| `dev` | pytest, pytest-cov, openpyxl, ruff | contributing / CI |
+| `dev` | pytest, pytest-cov, openpyxl, ruff, mypy | contributing / CI |
 | `all` | excel + parquet + llm | full feature set |
 
 ```bash
-pip install "cleanframe[excel,parquet]"
-pip install "cleanframe[llm]"
-pip install "cleanframe[dev]"
+pip install "cleanframe-engine[excel,parquet]"
+pip install "cleanframe-engine[llm]"
+pip install "cleanframe-engine[all]"
+pip install "cleanframe-engine[dev]"
 ```
+
+Straight from git, if you need a change that is not released yet:
+
+```bash
+pip install "cleanframe-engine @ git+https://github.com/inboxpraveen/Cleanframe"
+```
+
+### Legacy `.xls`
+
+The `excel` extra (openpyxl) covers `.xlsx` and `.xlsm`. Reading a legacy `.xls`
+workbook needs a different engine:
+
+```bash
+pip install xlrd
+```
+
+Writing `.xls` is refused: pandas emits `.xlsx` bytes, which Excel rejects under
+an `.xls` name. Write `.xlsx` instead.
 
 ## From source (editable)
 
@@ -49,7 +72,8 @@ result = cf.clean(df, mode="auto")   # llm=None by default
 ```
 
 Wheel + dependencies can be vendored with `pip download` on a connected machine
-and installed with `pip install --no-index --find-links=./wheels cleanframe`.
+and installed with
+`pip install --no-index --find-links=./wheels cleanframe-engine`.
 
 LLM mode requires outbound HTTPS to your chosen provider (or a local Ollama /
 LM Studio endpoint).

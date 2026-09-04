@@ -15,7 +15,7 @@ AI writes the cleaning recipe once. The recipe runs forever — deterministic, d
 | [Concepts](Concepts) | Recipes, modes, quarantine, drift, lineage |
 | [CLI](CLI) | Every cleanframe subcommand |
 | [API Reference](API-Reference) | Python API |
-| [Recipe Specification](Recipe-Specification) | YAML format v1 |
+| [Recipe Specification](Recipe-Specification) | YAML format v1 / v2 |
 | [Schema Specification](Schema-Specification) | Target schemas |
 | [Detectors and Ops](Detectors-and-Ops) | Built-ins + plugins |
 | [LLM Planning](LLM-Planning) | Providers, exposure, budgets |
@@ -32,6 +32,6 @@ AI writes the cleaning recipe once. The recipe runs forever — deterministic, d
 - [Examples](https://github.com/inboxpraveen/Cleanframe/tree/main/examples)
 
 ```bash
-pip install cleanframe
+pip install cleanframe-engine
 cleanframe report examples/messy_customers.csv
 ```

@@ -19,6 +19,13 @@ validate:
 - Replayed by the executor with **zero AI calls**.
 - Round-trips losslessly: `Recipe.from_yaml(r.to_yaml()) == r`.
 
+The format is `version: 1`, plus `version: 2` when the recipe carries a `read:`
+section recording how the source slice was read (sheet, column/row selection,
+delimiter, encoding, verbatim text mode). The loader reads both; a multi-sheet
+workbook recipe is a separate `version: 2` shape with a `sheets:` mapping. An
+unknown op, parameter, check or top-level key is rejected when the recipe loads —
+not silently ignored at run time.
+
 See [Recipe specification](Recipe-Specification).
 
 ## Pipeline stages
@@ -90,7 +97,7 @@ Infer a draft with `cf.infer_schema(df)` or `cleanframe infer-schema FILE`.
 ## Invariants (non-negotiable)
 
 1. **Determinism** — same input → same recipe / frame / diff
-2. **LLM never touches rows** — metadata (or approved sample) only
+2. **LLM never touches rows** — metadata, or an opt-in redacted sample, only
 3. **Recipes round-trip** — YAML ↔ object lossless
 4. **Nothing silently imputed or dropped**
 5. **Every changed cell is tracked**

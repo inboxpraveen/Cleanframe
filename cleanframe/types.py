@@ -23,12 +23,13 @@ class Mode(str, Enum):
     #: automatically. This is the default.
     REVIEW = "review"
 
-    #: Same deterministic result as ``review`` but intended for unattended
-    #: pipelines: no interactive gating is expected.
+    #: For unattended pipelines: only fixes at or above a higher confidence
+    #: threshold than ``review`` are planned (see ``planner.MODE_THRESHOLDS``).
     AUTO = "auto"
 
-    #: Zero tolerance. Validation failures, schema drift, and low-confidence
-    #: proposals raise instead of being quarantined or silently dropped.
+    #: Zero tolerance. Validation failures and schema drift raise instead of
+    #: being quarantined or silently dropped, and only the highest-confidence
+    #: fixes are planned at all — lower-confidence proposals are omitted.
     STRICT = "strict"
 
     @classmethod
@@ -36,10 +37,14 @@ class Mode(str, Enum):
         if isinstance(value, cls):
             return value
         try:
-            return cls(str(value).lower())
-        except ValueError as exc:  # pragma: no cover - defensive
+            return cls(str(value).strip().lower())
+        except ValueError as exc:
+            from .errors import CleanFrameError
+
             valid = ", ".join(m.value for m in cls)
-            raise ValueError(f"Unknown mode {value!r}. Expected one of: {valid}") from exc
+            raise CleanFrameError(
+                f"Unknown mode {value!r}. Expected one of: {valid}"
+            ) from exc
 
 
 class Severity(str, Enum):

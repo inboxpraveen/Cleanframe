@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+title: "CleanFrame: the reproducible data-cleaning engine for Python"
+message: "If you use CleanFrame in published work, please cite it."
+type: software
+authors:
+  - name: "CleanFrame contributors"
+repository-code: "https://github.com/inboxpraveen/Cleanframe"
+url: "https://github.com/inboxpraveen/Cleanframe"
+license: Apache-2.0
+version: 0.3.0
+date-released: "2026-09-04"
+keywords:
+  - data-cleaning
+  - data-quality
+  - reproducibility
+  - pandas
+  - schema-drift
