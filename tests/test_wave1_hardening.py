@@ -6,6 +6,7 @@ or crashes the pipeline. They must fail before the Batch-A fixes and pass after.
 from __future__ import annotations
 
 import io
+from contextlib import suppress
 
 import pandas as pd
 import pytest
@@ -99,10 +100,8 @@ def test_multiindex_columns_do_not_raise_raw_error():
     """M4: MultiIndex columns must not leak a raw TypeError from .astype(str)."""
     df = pd.DataFrame([[1, 2], [3, 4]], columns=pd.MultiIndex.from_tuples([("a", "x"), ("a", "y")]))
     # Either succeeds (flattened labels) or raises a clean CleanFrameError — never a raw TypeError.
-    try:
+    with suppress(CleanFrameError):
         cf.clean(df)
-    except CleanFrameError:
-        pass
 
 
 def test_string_index_with_name_column_does_not_crash():

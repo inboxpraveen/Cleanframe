@@ -218,14 +218,19 @@ _CLEAN_BODY = """
 """
 
 
-def _fmt_cell(value: Any) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return "∅"
+def _is_missing(value: Any) -> bool:
+    """True for None/NaN/NaT. An exotic cell pd.isna cannot judge counts as present."""
+    if value is None:
+        return True
     try:
-        if pd.isna(value):
-            return "∅"
+        return bool(pd.isna(value))
     except (TypeError, ValueError):
-        pass
+        return False
+
+
+def _fmt_cell(value: Any) -> str:
+    if _is_missing(value):
+        return "∅"
     return str(value)
 
 

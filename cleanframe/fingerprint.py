@@ -17,20 +17,24 @@ import pandas as pd
 DEFAULT_SAMPLE_ROWS = 200
 
 
+def _is_missing(value: Any) -> bool:
+    """True for None/NaN/NaT. An exotic cell pd.isna cannot judge counts as present."""
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))  # raises on array-like; cells are scalars here
+    except (TypeError, ValueError):
+        return False
+
+
 def _canonical(value: Any) -> str:
     """Render a single cell to a stable string.
 
     ``NaN``/``None`` collapse to a single sentinel so that a missing value hashes
     the same whether it arrived as ``float('nan')``, ``None``, or ``pd.NA``.
     """
-    if value is None:
+    if _is_missing(value):
         return "\x00NA\x00"
-    # pd.isna raises on array-like; cells are scalars here.
-    try:
-        if pd.isna(value):
-            return "\x00NA\x00"
-    except (TypeError, ValueError):
-        pass
     if isinstance(value, float):
         # repr(float) is round-trippable and stable across platforms in CPython.
         return repr(value)

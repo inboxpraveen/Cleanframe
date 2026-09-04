@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-09-04
+
+First follow-up to the 0.3.0 release, from the CI and code-scanning results that
+only appear once a project is public.
+
+### Fixed
+
+- **`Severity` comparisons were alphabetical, not ordered.** Only `__lt__` was
+  defined, so the `str` mixin answered everything else: `Severity.ERROR >
+  Severity.INFO` returned `False` because `"error" < "info"` as text. All four
+  comparisons are now defined on the severity rank. Library code always used
+  `.rank` explicitly, so nothing internal was affected, but any caller comparing
+  severities directly got wrong answers. Found by CodeQL's incomplete-ordering
+  query.
+- **`mypy` failed in CI** with `numpy/__init__.pyi:737: error: Type statement is
+  only supported in Python 3.12 and greater`. The `python_version = "3.10"` pin
+  also governs how dependency stubs are parsed, and numpy 2.5's stubs use syntax
+  that needs 3.12. Removed the pin; minimum-version support is still checked by
+  ruff's `target-version` and by the Python 3.10 test job.
+- **The wiki sync workflow could not push.** GitHub Actions' built-in token can
+  clone a wiki but not write to it, so the job committed and then failed on
+  authentication. It now requires the `WIKI_TOKEN` secret and stops up front with
+  an explanatory message. `wiki/README.md` claimed no token was needed; corrected.
+- Two module-level import cycles removed: `profile` with `ops`, and `recipe` with
+  `validate`. `COMMON_DATE_FORMATS` now lives in `ops`, which owns date parsing,
+  and is re-exported from `profile` so every existing import keeps working.
+  `validate` imports `ValidationRule` for annotations only.
+- Empty exception handlers in `fingerprint` and `report` replaced with a helper
+  that returns whether a cell is missing, so the intent is in the code rather
+  than in a comment beside `pass`.
+- Redundant function-level `import re` in the dates detector removed; it now
+  reuses the module's compiled pattern instead of recompiling per call.
+
+### Changed
+
+- Workflow actions updated: checkout to v7, setup-python to v7, upload-artifact
+  to v7, download-artifact to v8, codeql-action to v4. Clears the Node 20
+  deprecation warnings.
+- Dependabot groups the `github-actions` ecosystem, so action bumps arrive as one
+  pull request instead of one per action.
+- CodeQL analyses the library and skips `tests`. Test fixtures are deliberately
+  hostile (catastrophic-backtracking patterns, injection payloads, handlers that
+  assert something must not raise) and are not part of the wheel, so reporting
+  them buries real findings. Configuration lives in
+  `.github/codeql/codeql-config.yml`.
+- Protocol methods on `LLMClient` and `Planner` carry a docstring instead of a
+  bare `...`.
+- Installation docs link the package page, show how to pin a version, and mention
+  `cleanframe --version`. `CHANGELOG.md` gained the Keep a Changelog link
+  definitions now that releases are tagged.
+
+### Verified
+
+335 tests pass on Python 3.10 with the declared minimum pins (pandas 1.5.3,
+numpy 1.23.5), on Python 3.13 with pandas 2.3.3, and on Python 3.13 with pandas
+3.0.5 and numpy 2.5.2, which is what a fresh `pip install` resolves today.
+
 ## [0.3.0] — 2026-09-04
 
 Release-readiness pass driven by a full audit of the CLI, the Python API, packaging and
@@ -234,7 +291,8 @@ now fail loudly, and a few transforms that quietly corrupted data no longer run.
   deterministic executor, validation/quarantine, cell-level diff, schema drift, HTML reports,
   codegen, and CLI.
 
-[Unreleased]: https://github.com/inboxpraveen/Cleanframe/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/inboxpraveen/Cleanframe/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.3.1
 [0.3.0]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.3.0
 [0.2.0]: https://github.com/inboxpraveen/Cleanframe/commits/main
 [0.1.0]: https://github.com/inboxpraveen/Cleanframe/commits/main

@@ -61,7 +61,8 @@ class LLMClient(Protocol):
 
     model: str
 
-    def complete(self, system: str, user: str, *, max_tokens: int = 2048) -> LLMResponse: ...
+    def complete(self, system: str, user: str, *, max_tokens: int = 2048) -> LLMResponse:
+        """Return the model's reply plus token accounting."""
 
 
 class AnthropicClient:

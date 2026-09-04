@@ -24,7 +24,7 @@ import re
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -33,8 +33,10 @@ import yaml
 from ._util import safe_compile_regex
 from .errors import CleanFrameWarning, RecipeError, ValidationFailure
 from .profile import EMAIL_RE, URL_RE
-from .recipe import ValidationRule
 from .types import Mode
+
+if TYPE_CHECKING:  # annotations only — importing it at runtime would cycle
+    from .recipe import ValidationRule
 
 # ---------------------------------------------------------------------------
 # Validator registry (named checks)

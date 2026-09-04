@@ -83,7 +83,8 @@ class Planner(Protocol):
         schema: Any | None = None,
         mode: Mode | str = Mode.REVIEW,
         options: dict[str, Any] | None = None,
-    ) -> Recipe: ...
+    ) -> Recipe:
+        """Return a recipe for ``df``, honouring the mode's confidence policy."""
 
 
 def _op_key(op: Op) -> tuple[str, str]:

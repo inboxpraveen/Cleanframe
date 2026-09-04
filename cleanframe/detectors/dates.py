@@ -175,11 +175,9 @@ def detect_dates(series: pd.Series, ctx: DetectorContext) -> Issues:
 
 def _is_ambiguous(values: list[str]) -> bool:
     """True if no value disambiguates day-vs-month order (all numeric components <= 12)."""
-    import re
-
     saw_slashlike = False
     for v in values:
-        m = re.match(r"^\s*(\d{1,2})[/\-.](\d{1,2})[/\-.]\d{2,4}\s*$", v)
+        m = _SLASH_DATE_RE.match(v)
         if not m:
             continue
         saw_slashlike = True

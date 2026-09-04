@@ -45,11 +45,11 @@ def _constants_source() -> str:
         _KNOWN_CODES,
         _UNIT_ALIASES,
         _UNIT_TO_FAMILY,
+        COMMON_DATE_FORMATS,
         CURRENCY_SYMBOLS,
         DEFAULT_NA_TOKENS,
         UNIT_FAMILIES,
     )
-    from .profile import COMMON_DATE_FORMATS
 
     unit_factors = {u: f for fam in UNIT_FAMILIES.values() for u, f in fam.items()}
     na_tokens = sorted({t.casefold() for t in DEFAULT_NA_TOKENS})  # includes '' (H9)

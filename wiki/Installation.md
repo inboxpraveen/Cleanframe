@@ -20,7 +20,7 @@ Package page: [https://pypi.org/project/cleanframe-engine/](https://pypi.org/pro
 Pin a version in a requirements file the usual way:
 
 ```
-cleanframe-engine==0.3.0
+cleanframe-engine==0.3.1
 ```
 
 Check what you got:

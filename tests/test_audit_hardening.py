@@ -124,8 +124,7 @@ def test_openai_base_url_does_not_hijack_openrouter(monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "https://evil.example/v1")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     client = get_client("openrouter/google/gemma-4-26b-a4b-it")
-    assert "openrouter.ai" in (client._base_url or "")
-    assert "evil.example" not in (client._base_url or "")
+    assert client._base_url == "https://openrouter.ai/api/v1"
 
 
 def test_openai_base_url_still_applies_to_openai(monkeypatch):

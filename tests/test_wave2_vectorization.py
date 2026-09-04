@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from cleanframe import ops
 from cleanframe.executor import execute
 from cleanframe.ops import apply_column_op
 from cleanframe.recipe import Recipe
@@ -36,8 +37,6 @@ _TRICKY = [
 
 def _elementwise(op_name, series):
     """The reference: force the elementwise path by disabling the fast-path."""
-    import cleanframe.ops as ops
-
     orig = ops._is_pure_string
     ops._is_pure_string = lambda s: False
     try:

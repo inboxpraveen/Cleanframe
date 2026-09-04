@@ -187,6 +187,16 @@ def test_unknown_or_wrongly_typed_op_parameters_are_refused(op):
         Recipe.from_dict({"version": 1, "columns": {"a": {"ops": [op]}}})
 
 
+def test_severity_compares_by_rank_not_alphabetically():
+    """The str mixin made `ERROR > INFO` compare "error" to "info", which is False."""
+    low, mid, high = cf.Severity.INFO, cf.Severity.WARNING, cf.Severity.ERROR
+    assert low < mid < high
+    assert high > mid > low
+    assert low <= low and high >= high
+    assert sorted([high, low, mid]) == [low, mid, high]
+    assert max(high, low) is high and min(high, low) is low
+
+
 def test_round_accepts_both_documented_forms():
     for raw in ({"round": 2}, {"round": {"decimals": 2}}):
         recipe = Recipe.from_dict({"version": 1, "columns": {"a": {"ops": [raw]}}})

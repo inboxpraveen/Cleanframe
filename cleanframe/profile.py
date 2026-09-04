@@ -19,7 +19,7 @@ from typing import Any
 
 import pandas as pd
 
-from .ops import CURRENCY_SYMBOLS, parse_unit_scalar
+from .ops import COMMON_DATE_FORMATS, CURRENCY_SYMBOLS, parse_unit_scalar
 
 PATTERN_SAMPLE_CAP = 5000
 
@@ -37,32 +37,8 @@ _TIMESTAMPISH_RE = re.compile(r"\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}")
 _DIGIT_RE = re.compile(r"\d")
 _BOOL_TOKENS = {"true", "false", "yes", "no", "t", "f", "y", "n"}
 
-#: Candidate date formats, ordered most-specific first. Shared with the dates
-#: detector so profiling and planning agree on what "a date" looks like. Pure
-#: all-digit formats are intentionally excluded to avoid classifying plain
-#: integers (``"20240101"``, ``"1200"``) as dates.
-COMMON_DATE_FORMATS = [
-    "%Y-%m-%dT%H:%M:%S",
-    "%Y-%m-%d %H:%M:%S",
-    "%Y-%m-%d",
-    "%Y/%m/%d",
-    "%d/%m/%Y",
-    "%m/%d/%Y",
-    "%d-%m-%Y",
-    "%m-%d-%Y",
-    "%d.%m.%Y",
-    "%d/%m/%y",
-    "%m/%d/%y",
-    "%d-%m-%y",
-    "%d %b %Y",
-    "%d %B %Y",
-    "%b %d, %Y",
-    "%B %d, %Y",
-    "%d-%b-%Y",
-    "%d-%b-%y",
-    "%b %d %Y",
-    "%d %b %y",
-]
+#: Re-exported from :mod:`cleanframe.ops`, which owns date parsing. Imported here
+#: because profiling and schema inference both classify against the same table.
 
 # Column-name hints (lowercased substrings) that nudge ambiguous classifications.
 _NAME_HINTS = {

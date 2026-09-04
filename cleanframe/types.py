@@ -58,9 +58,27 @@ class Severity(str, Enum):
     def rank(self) -> int:
         return {"info": 0, "warning": 1, "error": 2}[self.value]
 
+    # All four comparisons are spelled out. The ``str`` mixin already provides
+    # lexicographic versions, so ``functools.total_ordering`` would leave them in
+    # place and "error" < "info" would silently compare as text.
     def __lt__(self, other: object) -> bool:
         if isinstance(other, Severity):
             return self.rank < other.rank
+        return NotImplemented
+
+    def __le__(self, other: object) -> bool:
+        if isinstance(other, Severity):
+            return self.rank <= other.rank
+        return NotImplemented
+
+    def __gt__(self, other: object) -> bool:
+        if isinstance(other, Severity):
+            return self.rank > other.rank
+        return NotImplemented
+
+    def __ge__(self, other: object) -> bool:
+        if isinstance(other, Severity):
+            return self.rank >= other.rank
         return NotImplemented
 
 

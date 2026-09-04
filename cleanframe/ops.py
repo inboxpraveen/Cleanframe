@@ -749,6 +749,34 @@ def round_op(series: pd.Series, decimals: int = 0) -> pd.Series:
 # ---------------------------------------------------------------------------
 # Date ops
 # ---------------------------------------------------------------------------
+#: Candidate date formats, ordered most-specific first. Shared with the dates
+#: detector so profiling and planning agree on what "a date" looks like. Pure
+#: all-digit formats are intentionally excluded to avoid classifying plain
+#: integers (``"20240101"``, ``"1200"``) as dates.
+COMMON_DATE_FORMATS = [
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%d/%m/%Y",
+    "%m/%d/%Y",
+    "%d-%m-%Y",
+    "%m-%d-%Y",
+    "%d.%m.%Y",
+    "%d/%m/%y",
+    "%m/%d/%y",
+    "%d-%m-%y",
+    "%d %b %Y",
+    "%d %B %Y",
+    "%b %d, %Y",
+    "%B %d, %Y",
+    "%d-%b-%Y",
+    "%d-%b-%y",
+    "%b %d %Y",
+    "%d %b %y",
+]
+
+
 def _coerce_parse_date(raw: Any) -> dict:
     raw = raw or {}
     if not isinstance(raw, dict):
@@ -819,8 +847,6 @@ def parse_dates_to_datetime(
         # and NOT order-dependent, unlike a bare format-less pd.to_datetime which locks
         # onto the first row's inferred format and silently nulls otherwise-valid dates
         # (and behaves differently across pandas versions).
-        from .profile import COMMON_DATE_FORMATS
-
         formats = list(COMMON_DATE_FORMATS)
         flex_fallback = True
 
@@ -1238,6 +1264,7 @@ __all__ = [
     "apply_frame_op",
     "parse_dates_to_datetime",
     "parse_unit_scalar",
+    "COMMON_DATE_FORMATS",
     "CAST_TARGETS",
     "UNIT_FAMILIES",
     "CURRENCY_SYMBOLS",

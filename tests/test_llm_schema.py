@@ -56,7 +56,7 @@ def test_sample_exposure_anonymizes_and_shuffles():
     email_col = next(c for c in md["columns"] if c["name"] == "Email")
     assert email_col["example_values"]
     assert all("@" in v for v in email_col["example_values"])
-    assert "example.com" in email_col["example_values"][0]
+    assert email_col["example_values"][0] == "user@example.com"
     # deterministic across calls
     md2 = build_metadata(df, profile_dataframe(df), Issues(), None, LLMExposure.SAMPLE)
     assert md["columns"][0]["example_values"] == md2["columns"][0]["example_values"]
@@ -81,7 +81,7 @@ def test_get_client_resolves_openai_compatible_providers(monkeypatch):
     assert groq._api_key == "groq-key"
 
     gemini = get_client("gemini/gemini-2.0-flash")  # alias for google
-    assert "generativelanguage.googleapis.com" in (gemini._base_url or "")
+    assert gemini._base_url == "https://generativelanguage.googleapis.com/v1beta/openai/"
 
     ollama = get_client("ollama/llama3.2")
     assert ollama._base_url == "http://localhost:11434/v1"

@@ -1,0 +1,11 @@
+name: CleanFrame CodeQL config
+
+# The library is what ships; tests are not in the wheel and deliberately contain
+# hostile fixtures (catastrophic-backtracking patterns, injection payloads, empty
+# handlers asserting "this must not raise"). Scanning them reports the fixtures
+# themselves as findings, which buries real results.
+paths-ignore:
+  - tests
+
+queries:
+  - uses: security-and-quality
