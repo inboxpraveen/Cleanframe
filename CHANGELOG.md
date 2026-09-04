@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The validation check registry moved into a new `cleanframe.checks` module, and
+  `cleanframe.recipe` imports the load-time name guard from there. `recipe` and
+  `validate` no longer import each other, which removes the last import cycle in
+  the package and restores the "dependency direction is strictly downward" rule
+  from CONTRIBUTING. Purely internal: `cleanframe.validator`,
+  `cleanframe.list_validators` and `cleanframe.validate.VALIDATOR_REGISTRY` are
+  the same objects as before, and a custom check registered the documented way
+  still works unchanged.
+
 ## [0.3.1] — 2026-09-04
 
 First follow-up to the 0.3.0 release, from the CI and code-scanning results that

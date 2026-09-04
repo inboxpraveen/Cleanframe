@@ -28,6 +28,7 @@ profile.py ──► detectors/ ──► planner.py ──► Recipe (recipe.py
 | `executor.py` | Deterministic 4-phase replay + lineage |
 | `ops.py` | Pure pandas transforms |
 | `validate.py` | Post-clean checks + quarantine |
+| `checks.py` | Check registry + the load-time name guard |
 | `diff.py` | Cell-level before/after |
 | `drift.py` | Fingerprint comparison on replay |
 | `schema.py` | Target schema model |

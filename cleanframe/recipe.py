@@ -28,6 +28,7 @@ import yaml
 
 from ._util import load_yaml, read_text, write_text
 from ._version import __version__
+from .checks import check_is_known
 from .errors import RecipeError
 from .ops import OP_REGISTRY, get_op, normalize_op, op_to_compact
 from .types import Op
@@ -77,8 +78,6 @@ class ValidationRule:
             raise RecipeError(
                 f"Validation on_fail must be one of {sorted(_VALID_ON_FAIL)}, got {on_fail!r}."
             )
-        from .validate import check_is_known
-
         check_is_known(str(raw["check"]))
         params = {k: v for k, v in raw.items() if k not in ("column", "check", "on_fail")}
         return cls(

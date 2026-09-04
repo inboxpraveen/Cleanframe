@@ -74,6 +74,9 @@ DataFrame ─▶ profile.py ─▶ detectors/ ─▶ planner.py ─▶ Recipe (r
   renames, and — critically — orders ops via `OP_ORDER`.
 - **`executor.py`** — replays a recipe in fixed phases with lineage tracking.
 - **`recipe.py` / `schema.py`** — the durable, human-reviewable artifacts.
+- **`checks.py`** — the validation check registry, plus the guard that rejects an
+  unknown check name at load time. It lives apart from `validate.py` so `recipe.py`
+  can use the guard without an import cycle.
 - **`llm.py`** — optional; writes a recipe from metadata only.
 
 The dependency direction is strictly downward (detectors import ops, planner
