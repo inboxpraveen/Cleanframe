@@ -15,6 +15,20 @@ The distribution name on PyPI is `cleanframe-engine`; the import package is
 `cleanframe` (`import cleanframe as cf`), and the CLI is `cleanframe` — or
 `python -m cleanframe`, an equivalent alias for every invocation.
 
+Package page: [https://pypi.org/project/cleanframe-engine/](https://pypi.org/project/cleanframe-engine/)
+
+Pin a version in a requirements file the usual way:
+
+```
+cleanframe-engine==0.3.0
+```
+
+Check what you got:
+
+```bash
+cleanframe --version
+```
+
 ### Extras
 
 | Extra | Installs | Needed for |

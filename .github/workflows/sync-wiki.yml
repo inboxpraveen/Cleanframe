@@ -3,8 +3,9 @@ name: Sync Wiki
 # GitHub Wiki lives in a *separate* git repo (*.wiki.git). This job copies
 # wiki/*.md from the main repository whenever those files change on main/master.
 #
-# Uses the workflow GITHUB_TOKEN with contents:write — no personal PAT needed
-# for the same repository's wiki.
+# The built-in GITHUB_TOKEN can CLONE a wiki but cannot PUSH to one, so this job
+# needs a classic PAT with the `repo` scope, stored as the WIKI_TOKEN secret.
+# See wiki/README.md for the two-minute setup.
 on:
   push:
     branches: [main, master]
@@ -21,16 +22,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Push wiki pages
         env:
-          # Prefer an optional WIKI_TOKEN secret; otherwise use the job token.
-          GH_TOKEN: ${{ secrets.WIKI_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.WIKI_TOKEN }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::WIKI_TOKEN is not set. GitHub's built-in token cannot push"\
+                 "to a wiki repository. Create a classic PAT with the 'repo' scope and"\
+                 "add it as the WIKI_TOKEN repository secret (see wiki/README.md)."
+            exit 1
+          fi
 
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"

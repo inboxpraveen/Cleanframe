@@ -241,7 +241,7 @@ pip install "cleanframe-engine[all]"
 pip install "cleanframe-engine @ git+https://github.com/inboxpraveen/Cleanframe"
 ```
 
-Python 3.10+. The distribution is `cleanframe-engine`; the import package is
+Python 3.10+. The distribution is [`cleanframe-engine`](https://pypi.org/project/cleanframe-engine/); the import package is
 `cleanframe` (`import cleanframe as cf`), and the CLI is `cleanframe` (or
 `python -m cleanframe`).
 

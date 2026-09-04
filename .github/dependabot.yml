@@ -13,3 +13,8 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One pull request for all workflow action bumps, not one per action.
+      github-actions:
+        patterns: ["*"]

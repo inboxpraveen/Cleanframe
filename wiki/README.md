@@ -12,25 +12,26 @@ A GitHub Action (`.github/workflows/sync-wiki.yml`) copies every `wiki/*.md`
 page (except this README) to the live wiki whenever those files change on
 `main` / `master`.
 
-**No personal token is required** in the normal case. The workflow uses
-GitHub Actions’ built-in `GITHUB_TOKEN` with `contents: write` permission to
-push to this repo’s wiki.
-
 Prerequisites:
 
 1. **Settings → General → Features → Wikis** is enabled.
 2. The wiki already exists (create any page once in the Wiki UI if needed).
 3. This workflow file is on `main`.
+4. A `WIKI_TOKEN` secret exists — see below. It is **required**, not optional:
+   GitHub Actions' built-in `GITHUB_TOKEN` can clone a wiki but cannot push to
+   one, so without it the job fails with "Password authentication is not
+   supported for Git operations".
 
 Then any push to `main` that touches `wiki/**` publishes automatically.
 You can also run **Actions → Sync Wiki → Run workflow** manually.
 
-### Optional: `WIKI_TOKEN` secret
+### Required: the `WIKI_TOKEN` secret
 
-Only needed if the built-in token is blocked in your org. There is **no
-“Wikis” checkbox** on fine-grained PATs — that is expected.
+A wiki lives in its own git repository, and the token GitHub Actions injects has
+no write access to it. There is also **no “Wikis” checkbox** on fine-grained
+PATs — that is expected.
 
-Use a **classic** personal access token instead:
+Use a **classic** personal access token:
 
 1. [Classic tokens](https://github.com/settings/tokens) → **Generate new token (classic)**
 2. Enable the **`repo`** scope (full control of private repositories — includes wiki push)
@@ -38,7 +39,8 @@ Use a **classic** personal access token instead:
    - Name: `WIKI_TOKEN`
    - Value: the classic token
 
-If `WIKI_TOKEN` is set, the workflow uses it; otherwise it uses `GITHUB_TOKEN`.
+The workflow checks for it first and stops with an explanatory message if it is
+missing, rather than failing on an opaque authentication error.
 
 ## Manual sync (optional)
 

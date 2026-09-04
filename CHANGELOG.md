@@ -233,3 +233,8 @@ now fail loudly, and a few transforms that quietly corrupted data no longer run.
 - Initial public release: profiler, detectors, rules + optional LLM planner, recipe YAML,
   deterministic executor, validation/quarantine, cell-level diff, schema drift, HTML reports,
   codegen, and CLI.
+
+[Unreleased]: https://github.com/inboxpraveen/Cleanframe/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.3.0
+[0.2.0]: https://github.com/inboxpraveen/Cleanframe/commits/main
+[0.1.0]: https://github.com/inboxpraveen/Cleanframe/commits/main
