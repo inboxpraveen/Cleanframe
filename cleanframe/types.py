@@ -85,16 +85,18 @@ class Severity(str, Enum):
 class LLMExposure(str, Enum):
     """How much of your data an LLM planner is permitted to see.
 
-    Mirrors the privacy tiers documented in the README. ``NONE`` keeps everything
-    on your machine; higher tiers progressively expand what metadata may leave it,
-    and never include raw cell values unless you explicitly opt into ``SAMPLE``.
+    ``NONE`` keeps everything on your machine; ``METADATA`` sends names, dtypes and
+    value *patterns* but no cell values; ``SAMPLE`` additionally sends example cell
+    values, so choosing it is the opt-in that some data leaves the machine.
     """
 
     #: Rules-only. No network calls, nothing leaves the machine.
     NONE = "none"
     #: LLM sees column names, dtypes, and value *patterns* (regex sketches) only.
     METADATA = "metadata"
-    #: LLM additionally sees an anonymized, shuffled sample the caller approved.
+    #: LLM additionally sees up to 5 example values per column. Emails, phones and
+    #: strings over 24 characters are redacted to a pattern; short category/text
+    #: values are sent verbatim. There is no separate approval step.
     SAMPLE = "sample"
 
 

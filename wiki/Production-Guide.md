@@ -19,7 +19,7 @@ Never call an LLM on every nightly batch. Plan once; replay forever.
 |---------|-------------------|------|
 | Detector scans | Sample first 50k non-null values / column | `DETECTOR_SAMPLE_CAP` in `_util` |
 | Cell diff detail | Store ≤ 100k changes; counts stay exact | `options={"max_diff_changes": N}` or `None` |
-| Executor | Snapshots only op-touched columns for the diff (peak ≈ input) | Process one file at a time; chunk upstream if needed |
+| Executor | Snapshots the op-touched columns for the diff, so the peak is the frame **plus** those columns — about 2.2× the frame when most columns are cleaned (measured: 3M rows, 4.8 GB peak for a 2.1 GB frame); far less when few are touched | Process one file at a time; use `stream_apply` for row-independent recipes; chunk upstream otherwise |
 | Streaming replay | Peak memory bounded by chunk, not file size | `stream_apply(..., chunksize=N)` / CLI `apply --chunksize N` |
 | Profiling | Pattern sample capped at 5k | Built-in |
 | LLM SAMPLE | Cap 10k before shuffle | Built-in |
@@ -39,27 +39,32 @@ result = cf.clean(df, options={"max_diff_changes": None})
 
 ### Out-of-core streaming
 
-`stream_apply(recipe, in_path, out_path, chunksize=100_000)` (CLI `apply FILE --recipe R --chunksize N`) replays a recipe over a CSV in chunks — peak memory tracks `chunksize`, not file size (600k rows at `chunksize=50_000` ≈ ~100MB). Only **row-independent** recipes stream; global ops (dedup, `fill_na` with mean/median/mode/ffill/bfill, `category`/`datetime`/`date` casts, format-less `parse_date`, the `unique` validator, unknown custom ops) are refused with a named error. `check_streamable(recipe)` is the pre-flight; drift is still checked on a bounded head sample.
+`stream_apply(recipe, in_path, out_path, chunksize=100_000)` (CLI `apply FILE --recipe R --chunksize N`) replays a recipe over a CSV in chunks — peak memory tracks `chunksize`, not file size (measured: 600k rows × 5 columns at `chunksize=50_000` peaked at ≈ 270 MB RSS, of which ≈ 90 MB is the Python + pandas + CleanFrame baseline; 1M and 3M rows at `chunksize=100_000` peaked at ≈ 530–590 MB, so the bound holds but scales with chunk size **and column count** — re-measure on your own schema). Only **row-independent** recipes stream; global ops (dedup, `fill_na` with mean/median/mode/ffill/bfill, `category`/`datetime`/`date` casts, format-less `parse_date`, the `unique` validator, unknown custom ops) are refused with a named error. `check_streamable(recipe)` is the pre-flight; drift is checked over every row before any output is written.
 
-Chunked reads must pin column types, or a later chunk can infer a different type
-from an earlier one and render the same value differently (`2` vs `2.0`).
-Streaming therefore pins each column's type from the recipe's
-`source_fingerprint`, so streamed values match a whole-frame replay. If the file
-no longer matches those recorded types, streaming falls back to reading every
-column as text and warns:
+Streaming reads the file **twice**. Chunked reads must agree on column types, or a
+later chunk can infer a different type from an earlier one and render the same
+value differently (`2` vs `2.0`). The first pass is a bounded-memory scan that
+learns the types a whole-frame read would infer (an integer column with a blank
+anywhere becomes float, text anywhere makes the column text) and checks schema
+and date-format drift across **every** row — so a drifted file, or a blank
+beyond the first 200 rows, is refused with a `DriftError` exactly as
+`apply_recipe` would, before any output exists. The second pass cleans and
+writes, with those types pinned, so the streamed file is byte-identical to a
+whole-frame replay in every drift mode (including `on_drift="warn"` /
+`check_drift=False`). A value that cannot be read is a `CleanFrameError` naming
+the chunk, never a raw pandas exception. A column that mixes booleans with
+blanks or other values across chunks has no chunk-independent equivalent and is
+refused (run it whole-frame).
 
-```text
-⚠ the file does not match the column types recorded in the recipe; streaming
-  every column as text instead.
-```
-
-Output (and quarantine) is written to a temporary sibling file and moved into
-place only after the whole stream succeeds.
+The output file is written to a temporary sibling and moved into place only
+after the whole stream succeeds; a quarantine file is written **only** when you
+pass `quarantine_path` (CLI `--quarantine`) — otherwise quarantined rows are
+counted and a warning says they were not saved, exactly like `apply`.
 
 ### Multi-sheet Excel & format auto-correction
 
 - `cf.clean_workbook(...)` cleans each sheet independently (one Recipe + diff per sheet); `cf.apply_workbook(...)` replays a `WorkbookRecipe` (`version: 2` YAML with a `sheets:` mapping). `read_frame`/`clean`/`apply` on a multi-sheet workbook with no `sheet=` selected raise, listing the tabs — never silently read sheet 1.
-- Read-time format auto-correction is on by default (`correct_format=True`; CLI `--no-correct`): CSV-family encoding (utf-8 → cp1252) and delimiter (`, ; \t |`) are detected, warned, and pinned into the recipe `read:` section for byte-stable replay; an ambiguous delimiter raises.
+- Read-time format auto-correction is on by default (`correct_format=True`; CLI `--no-correct`): CSV-family encoding (utf-8 → cp1252) and delimiter (`, ; \t |`) are detected, warned, and pinned into the recipe `read:` section for byte-stable replay; an ambiguous delimiter raises, and so does a file whose bytes look like Shift-JIS / GBK / Big5 / EUC-KR / Cyrillic (see [Awkward file shapes](#awkward-file-shapes)).
 
 ## Read-time type inference
 
@@ -88,6 +93,37 @@ and the choice is recorded as `text: true` in the recipe's `read:` section, so
 `apply_recipe` replays the same read. **Recommend `--text` for any file with
 identifier-like columns** (ZIP codes, account numbers, phone numbers, SKUs,
 leading-zero part numbers), where a "number" is really a label.
+
+## Awkward file shapes
+
+**Non-UTF-8 files.** A file that is not valid UTF-8 is read as cp1252 (Excel's Western
+"Save as CSV"). If its bytes instead look like Shift-JIS, GBK, Big5, EUC-KR or a Cyrillic
+code page, decoding them as a Western codec would produce garbled text, so `clean`/`report`
+**refuse** and list likely encodings:
+
+```text
+✗ sjis.csv is not UTF-8 and its bytes look like a multi-byte or non-Latin encoding … Likely
+  encodings: cp932, gb18030, big5. Pass encoding=... (CLI --encoding) to choose one.
+```
+
+Pass `encoding="shift_jis"` (`--encoding shift_jis`); the choice is pinned into the recipe's
+`read:` section. The decision uses a fixed, deterministic byte heuristic;
+`pip install "cleanframe-engine[detect]"` (charset-normalizer) only improves the *ranking* of
+candidates in that message. A file with too few non-ASCII bytes to tell (a couple of stray
+bytes) is still read as latin-1, with a warning saying so.
+
+**Title rows above the header.** `header_row=N` (CLI `--header-row N`) names the 0-based line
+that holds the column names (CSV) or row (Excel); everything above it is skipped and the
+setting is recorded in the recipe's `read:` section, so `apply` replays it. When a header
+looks wrong (an "empty column name" error, or an Excel sheet whose columns are mostly
+`Unnamed: N`) the message suggests a value — it never applies one for you.
+
+**Things CleanFrame warns about but never changes.** Rows with fewer fields than the header
+(read as empty cells), a last row that is a `Total` / `Subtotal` / `Grand total` footer,
+Excel formulas that were never calculated (no cached value) and Excel merged ranges (only the
+top-left cell keeps its value). A NUL byte inside a CSV is refused, because the parser would
+silently truncate the value there. `skiprows` past the end of the data raises instead of
+returning an empty frame. Writing a workbook back keeps hidden sheets hidden.
 
 ## Writing output safely
 
@@ -139,7 +175,7 @@ The CLI renders them as one `⚠ …` line on stderr.
 | Regex length / nested quantifiers | Reject dangerous patterns | Edit recipe to safer patterns |
 | Drift on apply | `on_drift="error"` | `"warn"` / `"ignore"` / CLI `--force` |
 | Missing recipe columns | Warn + skip (non-strict) | `mode="strict"` to fail |
-| Overwriting the input file | Refused | `overwrite=True` / CLI `--overwrite` (not for streaming) |
+| Overwriting the input file | Refused | `overwrite=True` / CLI `--overwrite` (also for streaming) |
 | LLM fallback | Warn + rules planner | `llm_fallback=False` / CLI `--no-llm-fallback` to raise |
 | Read-time inference losses | Warn, naming the columns | `text=True` / CLI `--text` to read verbatim |
 
@@ -166,7 +202,7 @@ Treat third-party recipe YAML like untrusted config. Review ops (especially
 
 - Inspect `result.log` for skips, quarantine counts, parse losses, truncated diffs.
 - `recipe.meta["llm_fallback"]` records degraded LLM planning;
-  `recipe.meta["llm_blocked_ops"]` records ops the mode stripped from an LLM plan.
+  `recipe.meta["llm_blocked_ops"]` records `fill_na` / `drop_columns` stripped from an LLM plan (every mode).
 - `result.quality.score` is a heuristic for reports — not a compliance metric.
 - Wire `warnings` into your logging framework (filter on `CleanFrameWarning`).
 
@@ -189,11 +225,21 @@ Branch on these in a scheduler or CI job rather than parsing stdout:
 ## CI pattern
 
 ```yaml
-# pseudo
-- pip install cleanframe-engine
-- cleanframe apply fixtures/incoming.csv --recipe recipes/customer.recipe.yaml --out out/clean.csv
-# exit 3 = drift, exit 4 = validation failure; both should fail the job
+# GitHub Actions
+- run: pip install cleanframe-engine
+- name: Replay the committed recipe
+  run: >
+    cleanframe apply fixtures/incoming.csv --recipe recipes/customer.recipe.yaml
+    --out out/clean.csv --mode strict --json > out/summary.json
+# exit 3 = drift (also number-format drift such as 1.200,50 vs 1,200.50)
+# exit 4 = a validation with on_fail: error failed, or --mode strict met any failure
+# Without --mode strict a plain validation failure QUARANTINES the rows and exits 0.
 ```
+
+`out/summary.json` is one JSON object (status, exit code, row counts, drift findings, warnings) you can
+assert on or post to a dashboard; see [`--json`](CLI#--json-run-summary). Library code logs through the
+standard `logging` module under the `cleanframe` logger (silent unless you configure it; `--verbose` turns it on),
+so run summaries land in your normal log pipeline rather than only on stderr.
 
 Commit recipes next to dbt/Airflow code. Review recipe diffs in PRs like code.
 

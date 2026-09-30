@@ -20,7 +20,7 @@ Package page: [https://pypi.org/project/cleanframe-engine/](https://pypi.org/pro
 Pin a version in a requirements file the usual way:
 
 ```
-cleanframe-engine==0.3.1
+cleanframe-engine==0.4.0
 ```
 
 Check what you got:
@@ -110,10 +110,25 @@ Set `PYTHONUTF8=1` if a legacy Windows console still mis-decodes Unicode outside
 | Variable | Used by |
 |----------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic |
-| `OPENAI_API_KEY` | OpenAI (+ fallback for some providers) |
+| `OPENAI_API_KEY` | OpenAI, Azure and generic `openai-compatible` **only** |
 | `OPENROUTER_API_KEY` | OpenRouter |
 | `GROQ_API_KEY` | Groq |
-| `OPENAI_BASE_URL` | Override base URL for OpenAI-compatible APIs |
+| `TOGETHER_API_KEY` | Together |
+| `FIREWORKS_API_KEY` | Fireworks |
+| `DEEPSEEK_API_KEY` | DeepSeek |
+| `MISTRAL_API_KEY` | Mistral |
+| `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) | Google Gemini |
+| `XAI_API_KEY` | xAI |
+| `PERPLEXITY_API_KEY` | Perplexity |
+| `COHERE_API_KEY` | Cohere |
+| `OLLAMA_API_KEY`, `LMSTUDIO_API_KEY` | Optional — local servers need no key |
+| `OPENAI_BASE_URL` | Override base URL for `openai` / `openai-compatible` / Azure only |
+| `CLEANFRAME_DEBUG` | `1` prints a traceback on an internal error (same as `--debug`) |
 | `NO_COLOR` | Disable ANSI colours in diff rendering |
+
+Each provider reads **only its own** variable: a key set for one vendor is never sent
+to another. In particular `OPENAI_API_KEY` is not a fallback for Groq, OpenRouter,
+Together, DeepSeek, Gemini or Ollama — an unset key raises an `LLMError` naming the
+variable that provider needs.
 
 CleanFrame never stores or logs API keys.
