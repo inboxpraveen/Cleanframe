@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import yaml
 
-from .errors import CleanFrameError, OutputError
+from .errors import CleanFrameError, CleanFrameWarning, OutputError
 
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _NON_ALNUM_RE = re.compile(r"[^0-9a-zA-Z]+")
@@ -44,6 +47,49 @@ _SIGNED_NUMBER_RE = re.compile(r"^[+-](?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$"
 #: Control characters Excel refuses to store, and its per-cell character limit.
 _EXCEL_ILLEGAL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 EXCEL_MAX_CELL_CHARS = 32_767
+
+
+#: Below this many rows the factorize round trip costs more than it saves.
+_UNIQUE_MAP_MIN_ROWS = 2_000
+#: Above this share of distinct values there is nothing to save.
+_UNIQUE_MAP_MAX_SHARE = 0.6
+
+
+def is_pure_string(series: pd.Series) -> bool:
+    """True for an object column whose non-null cells are *all* ``str``.
+
+    ``infer_dtype`` scans in C. Only then are equality classes trivial (no ``1 == 1.0
+    == True`` collisions) and only then can a per-value result be shared between
+    identical cells.
+    """
+    return pd.api.types.is_object_dtype(series.dtype) and pd.api.types.infer_dtype(
+        series, skipna=True
+    ) in ("string", "empty")
+
+
+def map_pure(series: pd.Series, fn: Callable[[Any], Any]) -> pd.Series:
+    """``series.map(fn)``, evaluating ``fn`` once per *distinct* value of a text column.
+
+    ``fn`` must be a pure function of the cell (every parser in :mod:`cleanframe.ops`
+    is). A million-row column of a few thousand distinct spellings then costs a few
+    thousand calls instead of a million, with identical results: the per-value results
+    are mapped through a plain ``Series.map`` (so pandas infers the dtype exactly as it
+    would have) and fanned back out by position. Missing cells use ``fn(NaN)``, as the
+    plain map would. Anything that is not an all-``str`` object column, or that has
+    little repetition, takes the ordinary path.
+    """
+    n = len(series)
+    if n < _UNIQUE_MAP_MIN_ROWS or not is_pure_string(series):
+        return series.map(fn)
+    codes, uniques = pd.factorize(series)
+    if len(uniques) > n * _UNIQUE_MAP_MAX_SHARE:
+        return series.map(fn)
+    probe = pd.Series([*uniques, np.nan], dtype=object)
+    mapped = probe.map(fn)
+    out = mapped.iloc[codes]  # a code of -1 (missing) selects the trailing fn(NaN) result
+    out.index = series.index
+    out.name = series.name
+    return out
 
 
 def is_string_like(series: pd.Series) -> bool:
@@ -239,6 +285,8 @@ def sanitize_csv_value(value: Any) -> Any:
         return value
     if _SIGNED_NUMBER_RE.match(value):
         return value
+    if len(value) == 1 and value in "+-":
+        return value  # a lone sign carries no payload (a common "no value" placeholder)
     return "'" + value
 
 
@@ -271,6 +319,16 @@ def sanitize_dataframe_for_spreadsheet(df: pd.DataFrame) -> pd.DataFrame:
                 f"Column {col!r} holds a value longer than Excel's "
                 f"{EXCEL_MAX_CELL_CHARS}-character cell limit. Write .csv or .parquet "
                 "instead, or shorten the value."
+            )
+        stripped = int(
+            series.map(lambda v: isinstance(v, str) and bool(_EXCEL_ILLEGAL_RE.search(v))).sum()
+        )
+        if stripped:
+            warnings.warn(
+                f"CleanFrame: removed control characters Excel cannot store from {stripped} "
+                f"cell(s) in column {col!r}. Write .csv or .parquet to keep them.",
+                CleanFrameWarning,
+                stacklevel=2,
             )
         out[col] = series.map(lambda v: _EXCEL_ILLEGAL_RE.sub("", v) if isinstance(v, str) else v)
     return out
@@ -352,7 +410,16 @@ class _NoDuplicateLoader(yaml.SafeLoader):
 def _construct_unique_mapping(loader, node, deep=False):
     mapping: dict = {}
     for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
+        if (
+            isinstance(key_node, yaml.ScalarNode)
+            and key_node.style is None
+            and key_node.tag != yaml.resolver.BaseResolver.DEFAULT_SCALAR_TAG
+        ):
+            # A plain key is a *name* here. YAML 1.1 would read `yes` as True, `010` as 8
+            # and `12:30` as 750, silently renaming the column the recipe talks about.
+            key = key_node.value
+        else:
+            key = loader.construct_object(key_node, deep=deep)
         if isinstance(key, list):
             key = tuple(key)
         if key in mapping:
@@ -421,6 +488,8 @@ __all__ = [
     "looks_like_code_values",
     "safe_compile_regex",
     "sanitize_csv_value",
+    "is_pure_string",
+    "map_pure",
     "sanitize_dataframe_for_csv",
     "sanitize_dataframe_for_spreadsheet",
     "ensure_parent",

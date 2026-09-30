@@ -9,7 +9,7 @@ import pytest
 
 import cleanframe as cf
 from cleanframe.drift import detect_drift
-from cleanframe.errors import DriftError, ValidationFailure
+from cleanframe.errors import DriftError, RecipeError, ValidationFailure
 from cleanframe.fingerprint import fingerprint_dataframe
 from cleanframe.llm import _finalize_llm_recipe, get_client
 from cleanframe.recipe import ColumnRecipe, Recipe, ValidationRule
@@ -198,13 +198,13 @@ def test_codegen_normalize_unit_emit_column():
 
 
 def test_codegen_rejects_redos_replace():
-    from cleanframe.codegen import generate_code
 
-    recipe = Recipe.from_dict(
-        {"version": 1, "columns": {"a": {"ops": [{"replace": {"pattern": "(a+)+", "repl": "x"}}]}}}
-    )
-    with pytest.raises(ValueError, match="ReDoS|exceeds|Invalid|quantifier"):
-        generate_code(recipe)
+    # A ReDoS pattern is now refused when the recipe loads, before it can reach
+    # the executor or the exporter.
+    with pytest.raises(RecipeError, match="ReDoS|exceeds|Invalid|quantifier"):
+        Recipe.from_dict(
+            {"version": 1, "columns": {"a": {"ops": [{"replace": {"pattern": "(a+)+", "repl": "x"}}]}}}
+        )
 
 
 def test_ambiguous_slash_formats_not_both_kept():
