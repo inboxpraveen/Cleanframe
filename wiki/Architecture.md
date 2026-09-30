@@ -32,9 +32,14 @@ profile.py ──► detectors/ ──► planner.py ──► Recipe (recipe.py
 | `diff.py` | Cell-level before/after |
 | `drift.py` | Fingerprint comparison on replay |
 | `schema.py` | Target schema model |
-| `codegen.py` | Recipe → standalone pandas script |
+| `codegen.py` | Recipe → standalone pandas script; embeds the executor's own helper source |
+| `_numparse.py` / `_textparse.py` | Self-contained scalar parsers (numbers, units, ints, title case) shared verbatim by `ops.py` and generated code |
+| `streaming.py` | Out-of-core chunked replay; two passes so its output equals a whole-frame replay |
+| `workbook.py` | Multi-sheet workbook recipes |
+| `readfix.py` | Read-time encoding / delimiter / header detection |
+| `plugins.py` | Entry-point / `--plugin` / `CLEANFRAME_PLUGINS` discovery |
 | `dataio.py` | Path ↔ DataFrame |
-| `cli.py` | Console entry |
+| `cli.py` | Console entry, exit codes, `--json` run summary |
 
 ## Executor phases
 
@@ -59,6 +64,7 @@ functions are used where cycles would otherwise appear (e.g. profile ↔ detecto
 
 ## Extension points
 
-- `@detector` / `@register_op` / `@validator`
+- `@detector` / `@register_op(codegen=, helpers=, streamable=)` / `@validator`, loaded from outside the session via
+  the `cleanframe.plugins` entry-point group (see [Plugins](Plugins))
 - Custom `LLMClient`
 - Custom `Planner` passed to `cf.clean(..., planner=...)`

@@ -4,7 +4,7 @@
 
 ## Invariants
 
-Which of the five invariants in CONTRIBUTING.md did you have to think about, and why is
+Which of the six invariants in CONTRIBUTING.md did you have to think about, and why is
 each still intact?
 
 - [ ] Determinism (same input, same recipe, same diff)
@@ -12,6 +12,7 @@ each still intact?
 - [ ] Recipes round-trip losslessly and idempotently
 - [ ] Nothing is silently imputed, dropped, or coerced
 - [ ] Every changed cell is tracked
+- [ ] Exported code equals the executor (shared implementation, not a copy)
 
 ## Load-bearing walls
 
