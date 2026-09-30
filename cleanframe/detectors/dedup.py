@@ -93,7 +93,17 @@ def detect_duplicates(df: pd.DataFrame, ctx: DetectorContext) -> Issues:
     # Reuse the profiler's exact-duplicate count instead of hashing the whole frame
     # a second time (the profiler already computed df.duplicated() for every clean).
     exact = int(ctx.profile.duplicate_row_count)
-    if exact:
+    if exact and df.shape[1] < 2:
+        # In a one-column frame a "duplicate row" is just a repeated value (a list of
+        # categories, a column of readings) - dropping them would delete data.
+        issues.add(
+            "duplicate_rows",
+            f"{exact} repeated value(s) in a single-column frame (not dropped automatically)",
+            severity=Severity.INFO,
+            confidence=0.3,
+            evidence={"count": exact},
+        )
+    elif exact:
         issues.add(
             "duplicate_rows",
             f"{exact} exact duplicate row(s)",
