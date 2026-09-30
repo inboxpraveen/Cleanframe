@@ -38,10 +38,37 @@ def _equal(a: Any, b: Any) -> bool:
         return False
 
 
+_EXACT_INT = 2**53  # beyond this a float64 cannot represent every integer
+
+
+def _needs_exact_compare(before: pd.Series, after: pd.Series) -> bool:
+    """True when numpy's ``==`` would silently promote and hide a change.
+
+    ``int64 == float64`` promotes to float64, so ``9007199254740993`` compares equal
+    to the ``9007199254740992.0`` it was rounded to.
+    """
+    kinds = {before.dtype.kind, after.dtype.kind}
+    if kinds != {"i", "f"} and kinds != {"u", "f"}:
+        return False
+    ints = before if before.dtype.kind in "iu" else after
+    if ints.empty:
+        return False
+    arr = ints.to_numpy()
+    return bool(arr.max() > _EXACT_INT or arr.min() < -_EXACT_INT)
+
+
 def _changed_mask(before: pd.Series, after: pd.Series) -> pd.Series:
     """Vectorised element-wise 'changed?' mask with NaN==NaN treated as unchanged."""
     both_na = before.isna().to_numpy() & after.isna().to_numpy()
+    # A dtype flip between bool and anything else is a change even when the values
+    # compare equal (``1 == True``), e.g. ``cast: bool`` on a 1/0 column.
+    if (before.dtype == bool) != (after.dtype == bool) or (
+        str(before.dtype) == "boolean"
+    ) != (str(after.dtype) == "boolean"):
+        return pd.Series(~both_na, index=before.index)
     try:
+        if _needs_exact_compare(before, after):
+            raise TypeError("exact per-element comparison required")
         equal = (before.to_numpy() == after.to_numpy())
     except Exception:  # noqa: BLE001 - dtype mismatch -> fall back element-wise
         equal = pd.Series(
