@@ -21,6 +21,7 @@ terminal (notably Windows consoles).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import warnings
@@ -48,9 +49,66 @@ def _reconfigure_stdout() -> None:
             pass
 
 
+#: Machine-readable run summary, filled in by the command handlers and printed by
+#: ``main`` under ``--json``. With ``--json`` stdout carries exactly one JSON object;
+#: every human-readable line moves to stderr.
+_RUN: dict = {}
+_JSON_MODE = False
+
+
+def _note(**fields) -> None:
+    _RUN.update(fields)
+
+
+def _drift_json(report) -> dict | None:
+    if report is None:
+        return None
+    return {
+        "has_drift": bool(report.has_drift),
+        "findings": [
+            {
+                "kind": f.kind,
+                "severity": f.severity.value,
+                "column": f.column,
+                "message": f.message,
+            }
+            for f in report.findings
+        ],
+    }
+
+
+_ARGV: list[str] | None = None
+
+
+def _json_requested() -> bool:
+    argv = _ARGV if _ARGV is not None else sys.argv[1:]
+    return "--json" in argv
+
+
+class _CliParser(argparse.ArgumentParser):
+    """argparse that, under ``--json``, still puts one JSON object on stdout for a usage error."""
+
+    def error(self, message: str):  # type: ignore[override]
+        if _json_requested():
+            print(
+                json.dumps(
+                    {
+                        "cleanframe_version": __version__,
+                        "command": None,
+                        "status": "usage_error",
+                        "exit_code": EXIT_USAGE,
+                        "error": {"type": "UsageError", "message": message},
+                        "warnings": [],
+                    },
+                    indent=2,
+                )
+            )
+        super().error(message)
+
+
 def _emit(text: str, *, stream=None) -> None:
     """Print a line, degrading gracefully on a console that cannot encode it."""
-    target = stream or sys.stdout
+    target = stream or (sys.stderr if _JSON_MODE else sys.stdout)
     try:
         print(text, file=target)
     except UnicodeEncodeError:  # pragma: no cover - depends on console codepage
@@ -67,6 +125,7 @@ def _install_warning_format() -> None:
             text = text[len("CleanFrame:") :].strip()
         elif not issubclass(category, CleanFrameWarning):
             text = f"{category.__name__}: {text}"
+        _RUN.setdefault("warnings", []).append(text)
         _emit(f"⚠ {text}", stream=file or sys.stderr)
 
     warnings.showwarning = show
@@ -118,6 +177,12 @@ def _add_selection_args(parser: argparse.ArgumentParser, *, sheet: bool = True) 
         type=_nonneg_int,
         help="skip the first N data rows (the header row is always kept)",
     )
+    parser.add_argument(
+        "--header-row",
+        type=_nonneg_int,
+        dest="header_row",
+        help="0-based line the header is on, when title rows sit above it",
+    )
 
 
 def _add_read_args(parser: argparse.ArgumentParser) -> None:
@@ -145,7 +210,7 @@ def _selection_kwargs(args: argparse.Namespace) -> dict:
     cols = getattr(args, "columns", None)
     if cols:
         out["columns"] = [c.strip() for c in cols.split(",") if c.strip()]
-    for name in ("nrows", "skiprows"):
+    for name in ("nrows", "skiprows", "header_row"):
         if getattr(args, name, None) is not None:
             out[name] = getattr(args, name)
     return out
@@ -181,6 +246,38 @@ def _reserve_outputs(args: argparse.Namespace, *attrs: str) -> None:
             check_output_target(target, args.file, overwrite=getattr(args, "overwrite", False))
 
 
+def _guard_recipe_overwrite(path: Path, new_yaml: str | None, args: argparse.Namespace) -> None:
+    """Refuse to replace a recipe that differs from the one just planned.
+
+    A recipe is the durable, reviewed artifact - often hand-edited and committed. A
+    re-run over unchanged input regenerates the same bytes and is allowed; anything
+    else needs ``--overwrite`` so an edit is never lost silently.
+    """
+    from .errors import OutputError
+
+    if getattr(args, "overwrite", False) or not path.exists() or new_yaml is None:
+        return
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        existing = None
+    if existing != new_yaml:
+        raise OutputError(
+            f"{path} already exists and differs from the recipe just planned (a hand-edited "
+            "or older recipe?). Pass --overwrite to replace it, or --recipe to write elsewhere."
+        )
+
+
+def _load_cli_plugins(args: argparse.Namespace) -> None:
+    """Import ``--plugin`` modules, and installed entry-point/env plugins unless disabled."""
+    from .plugins import load_plugins
+
+    load_plugins(
+        getattr(args, "plugin", None) or (),
+        discover=not getattr(args, "no_plugins", False),
+    )
+
+
 def _reject_unsupported(mode: str, args: argparse.Namespace, names: dict[str, str]) -> None:
     """Fail loudly for flags that would otherwise be silently ignored."""
     given = [flag for attr, flag in names.items() if getattr(args, attr, None)]
@@ -203,6 +300,9 @@ def _cmd_report(args: argparse.Namespace) -> int:
     rep.save(check_output_target(out, args.file))
     _emit(f"✓ Report written to {out}")
     q = rep.quality
+    _note(outputs={"report": str(out)})
+    if q:
+        _note(quality={"score": q.score, "grade": q.grade, "label": q.label})
     if q:
         _emit(f"  Quality score: {q.score}/100 (grade {q.grade} — {q.label})")
     if args.open:
@@ -248,7 +348,7 @@ def _cmd_clean_workbook(args: argparse.Namespace) -> int:
         {
             "code": "--code", "report": "--report", "quarantine": "--quarantine",
             "nrows": "--nrows", "skiprows": "--skiprows", "sep": "--sep",
-            "encoding": "--encoding",
+            "encoding": "--encoding", "header_row": "--header-row",
         },
     )
     _reserve_outputs(args, "recipe")
@@ -265,8 +365,10 @@ def _cmd_clean_workbook(args: argparse.Namespace) -> int:
         **{k: v for k, v in selection.items() if k == "columns"},
     )
     recipe_out = Path(args.recipe) if args.recipe else _default_out(args.file, ".recipe.yaml")
+    _guard_recipe_overwrite(recipe_out, result.recipe.to_yaml(), args)
     result.save_recipe(recipe_out)
     _emit(f"✓ Workbook recipe → {recipe_out}  ({len(result.sheets)} sheet(s) cleaned)")
+    _note(outputs={"recipe": str(recipe_out)}, sheets=sorted(result.sheets))
     if args.out:
         result.save_data(args.out, overwrite=bool(args.overwrite))
         _emit(f"✓ Cleaned workbook → {args.out}")
@@ -301,8 +403,15 @@ def _cmd_clean(args: argparse.Namespace) -> int:
         **_read_kwargs(args),
     )
     recipe_out = Path(args.recipe) if args.recipe else _default_out(args.file, ".recipe.yaml")
+    _guard_recipe_overwrite(recipe_out, result.recipe.to_yaml(), args)
     result.recipe.save(recipe_out)
     _emit(f"✓ Recipe   → {recipe_out}")
+    _note(
+        outputs={"recipe": str(recipe_out)},
+        rows_out=int(len(result.dataframe)),
+        rows_quarantined=int(len(result.quarantine)),
+        diff=result.diff.summary(),
+    )
 
     if args.out:
         write_frame(result.dataframe, args.out, source=args.file, overwrite=args.overwrite)
@@ -318,7 +427,7 @@ def _cmd_clean(args: argparse.Namespace) -> int:
         _emit(f"✓ Quarantine → {args.quarantine}  ({len(result.quarantine)} rows)")
 
     _emit("")
-    result.diff.show()
+    result.diff.show(stream=sys.stderr if _JSON_MODE else None)
     if result.has_quarantine and not args.quarantine:
         _emit(
             f"\n⚠ {len(result.quarantine)} row(s) quarantined "
@@ -329,6 +438,7 @@ def _cmd_clean(args: argparse.Namespace) -> int:
 
 
 def _drift_stop(args: argparse.Namespace, exc: DriftError, action: str) -> int:
+    _note(drift=_drift_json(exc.report), status="drift")
     _emit(exc.report.render() if exc.report is not None else str(exc))
     _emit("")
     if args.mode == "strict":
@@ -350,6 +460,7 @@ def _cmd_apply_workbook(args: argparse.Namespace, recipe) -> int:
             "report": "--report", "quarantine": "--quarantine", "sheet": "--sheet",
             "columns": "--columns", "nrows": "--nrows", "skiprows": "--skiprows",
             "sep": "--sep", "encoding": "--encoding", "text": "--text",
+            "header_row": "--header-row", "chunksize": "--chunksize",
         },
     )
     on_drift = "ignore" if args.force else "error"
@@ -363,6 +474,7 @@ def _cmd_apply_workbook(args: argparse.Namespace, recipe) -> int:
     out = Path(args.out) if args.out else _default_out(args.file, ".clean.xlsx")
     result.save_data(out, overwrite=bool(args.overwrite))
     _emit(f"✓ Cleaned workbook → {out}")
+    _note(outputs={"data": str(out)}, sheets=sorted(result.sheets))
     _emit("")
     _emit(result.summary())
     return EXIT_OK
@@ -375,7 +487,8 @@ def _cmd_apply_stream(args: argparse.Namespace, recipe) -> int:
         "streaming mode (--chunksize); the recipe's read: section governs selection",
         args,
         {"report": "--report", "sheet": "--sheet", "columns": "--columns", "nrows": "--nrows",
-         "skiprows": "--skiprows", "sep": "--sep", "encoding": "--encoding", "text": "--text"},
+         "skiprows": "--skiprows", "sep": "--sep", "encoding": "--encoding", "text": "--text",
+         "header_row": "--header-row"},
     )
     _reserve_outputs(args, "out", "quarantine")
     out = Path(args.out) if args.out else _default_out(args.file, ".clean.csv")
@@ -389,6 +502,15 @@ def _cmd_apply_stream(args: argparse.Namespace, recipe) -> int:
     except DriftError as exc:
         return _drift_stop(args, exc, "stream")
     _emit(f"✓ Streamed → {out}")
+    _note(
+        outputs={"data": str(out)},
+        rows_in=summary.rows_in,
+        rows_out=summary.rows_out,
+        rows_dropped=summary.rows_dropped,
+        rows_quarantined=summary.rows_quarantined,
+        changed_cells=summary.changed_cells,
+        chunks=summary.chunks,
+    )
     _emit(summary.render())
     return EXIT_OK
 
@@ -424,6 +546,13 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     out = Path(args.out) if args.out else _default_out(args.file, ".clean.csv")
     write_frame(result.dataframe, out, source=args.file, overwrite=args.overwrite)
     _emit(f"✓ Cleaned → {out}  ({len(result.dataframe)} rows)")
+    _note(
+        outputs={"data": str(out)},
+        rows_out=int(len(result.dataframe)),
+        rows_quarantined=int(len(result.quarantine)),
+        diff=result.diff.summary(),
+        drift=_drift_json(result.drift),
+    )
     if args.report:
         result.report(args.report)
         _emit(f"✓ Report  → {args.report}")
@@ -439,7 +568,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
                 "(pass --quarantine FILE to save them)."
             )
     _emit("")
-    result.diff.show()
+    result.diff.show(stream=sys.stderr if _JSON_MODE else None)
     _print_log(args, result.log)
     return EXIT_OK
 
@@ -448,6 +577,7 @@ def _cmd_suggest(args: argparse.Namespace) -> int:
     from . import suggest_update
 
     patched, drift = suggest_update(args.file, args.recipe, **_selection_kwargs(args))
+    _note(drift=_drift_json(drift))
     _emit(drift.render())
     if not drift.has_drift:
         if args.update:
@@ -455,6 +585,7 @@ def _cmd_suggest(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     if not args.update:
+        _note(status="drift")
         _emit("\nRe-run with --update to write a patched recipe.")
         return EXIT_DRIFT
 
@@ -491,20 +622,26 @@ def _cmd_infer_schema(args: argparse.Namespace) -> int:
 def _cmd_detectors(args: argparse.Namespace) -> int:
     from .detectors import DETECTOR_REGISTRY, list_detectors
 
+    items = []
     for name in list_detectors():
         spec = DETECTOR_REGISTRY[name]
         doc = (spec.doc or "").strip().splitlines()[0] if spec.doc else ""
+        items.append({"name": name, "scope": spec.scope, "doc": doc})
         _emit(f"  {name:16s} [{spec.scope}]  {doc}")
+    _note(detectors=items)
     return EXIT_OK
 
 
 def _cmd_ops(args: argparse.Namespace) -> int:
     from .ops import OP_REGISTRY, list_ops
 
+    items = []
     for name in list_ops():
         spec = OP_REGISTRY[name]
         doc = (spec.doc or "").strip().splitlines()[0] if spec.doc else ""
+        items.append({"name": name, "scope": spec.scope, "doc": doc})
         _emit(f"  {name:20s} [{spec.scope}]  {doc}")
+    _note(ops=items)
     return EXIT_OK
 
 
@@ -518,7 +655,7 @@ _MODE_HELP = (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    common = argparse.ArgumentParser(add_help=False)
+    common = _CliParser(add_help=False)
     common.add_argument(
         "--verbose", "-v", action="store_true", default=argparse.SUPPRESS,
         help="print the run log (skipped columns, quarantine reasons, parse losses)",
@@ -527,8 +664,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--debug", action="store_true", default=argparse.SUPPRESS,
         help="print a traceback on an internal error",
     )
+    common.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS,
+        help="print one machine-readable JSON summary on stdout (human output goes to stderr)",
+    )
+    common.add_argument(
+        "--plugin", action="append", metavar="MODULE", default=argparse.SUPPRESS,
+        help="import MODULE first so its custom ops/detectors are available (repeatable)",
+    )
+    common.add_argument(
+        "--no-plugins", action="store_true", default=argparse.SUPPRESS,
+        help="do not auto-load installed entry-point / CLEANFRAME_PLUGINS plugins",
+    )
 
-    parser = argparse.ArgumentParser(
+    parser = _CliParser(
         prog="cleanframe",
         description="The reproducible data-cleaning engine. Profile, clean, replay, detect drift.",
     )
@@ -651,22 +800,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    _reconfigure_stdout()
-    _install_warning_format()
-    parser = build_parser()
-    args = parser.parse_args(argv)
+def _print_json_summary(args: argparse.Namespace, code: int) -> None:
+    status = _RUN.get("status") or (
+        "ok" if code == EXIT_OK else "validation_failed" if code == EXIT_VALIDATION else "error"
+    )
+    summary = {
+        "cleanframe_version": __version__,
+        "command": getattr(args, "command", None),
+        "input": getattr(args, "file", None),
+        "status": status,
+        "exit_code": code,
+        **{k: v for k, v in _RUN.items() if k != "status"},
+    }
+    summary.setdefault("warnings", [])
+    print(json.dumps(summary, indent=2, sort_keys=False, default=str))
+
+
+def _fail(exc: BaseException, code: int, text: str | None = None) -> int:
+    _note(error={"type": type(exc).__name__, "message": str(exc)})
+    _emit(text if text is not None else f"✗ {exc}", stream=sys.stderr)
+    return code
+
+
+def _dispatch(args: argparse.Namespace) -> int:
     try:
+        _load_cli_plugins(args)
         return args.func(args)
     except ValidationFailure as exc:
-        _emit(f"✗ {exc}", stream=sys.stderr)
-        return EXIT_VALIDATION
+        _note(status="validation_failed")
+        return _fail(exc, EXIT_VALIDATION)
     except DriftError as exc:
-        _emit(f"✗ {exc}", stream=sys.stderr)
-        return EXIT_DRIFT
+        _note(status="drift", drift=_drift_json(getattr(exc, "report", None)))
+        return _fail(exc, EXIT_DRIFT)
     except CleanFrameError as exc:
-        _emit(f"✗ {exc}", stream=sys.stderr)
-        return EXIT_ERROR
+        return _fail(exc, EXIT_ERROR)
     except KeyboardInterrupt:  # pragma: no cover
         _emit("Interrupted.", stream=sys.stderr)
         return EXIT_INTERRUPT
@@ -675,13 +842,38 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 - the CLI must not hand users a traceback
         if _debug_enabled(args):
             raise
-        _emit(
+        return _fail(
+            exc,
+            EXIT_INTERNAL,
             f"✗ Internal error: {type(exc).__name__}: {exc}\n"
             f"  This is a bug. Re-run with --debug for a traceback, then report it at "
             f"{_ISSUE_URL}",
-            stream=sys.stderr,
         )
-        return EXIT_INTERNAL
+
+
+def main(argv: list[str] | None = None) -> int:
+    global _JSON_MODE, _ARGV
+    _ARGV = list(argv) if argv is not None else None
+    _reconfigure_stdout()
+    _install_warning_format()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    _RUN.clear()
+    _JSON_MODE = bool(getattr(args, "json", False))
+    if getattr(args, "verbose", False):
+        import logging
+
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        logging.getLogger("cleanframe").addHandler(handler)
+        logging.getLogger("cleanframe").setLevel(logging.INFO)
+    try:
+        code = _dispatch(args)
+        if _JSON_MODE:
+            _print_json_summary(args, code)
+        return code
+    finally:
+        _JSON_MODE = False
 
 
 if __name__ == "__main__":  # pragma: no cover

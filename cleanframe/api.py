@@ -8,6 +8,8 @@ report are always one attribute away.
 
 from __future__ import annotations
 
+import difflib
+import logging
 import warnings
 from pathlib import Path
 from typing import Any
@@ -33,15 +35,25 @@ from .types import Mode
 # ---------------------------------------------------------------------------
 # input coercion
 # ---------------------------------------------------------------------------
-def _read_binding(sheet, columns, nrows, skiprows) -> dict[str, Any]:  # noqa: D401
-    """Collect the non-default read/selection options into a dict (empty if none)."""
-    binding = {"sheet": sheet, "columns": columns, "nrows": nrows, "skiprows": skiprows}
-    return {k: v for k, v in binding.items() if v is not None}
+def _read_binding(sheet, columns, nrows, skiprows, header_row=None) -> dict[str, Any]:  # noqa: D401
+    """Collect the non-default read/selection options into a dict (empty if none).
+
+    ``header_row`` is also recorded as ``blank_lines`` (lines above the header) so the
+    streaming reader, which only knows ``blank_lines``, skips the same lines.
+    """
+    binding = {
+        "sheet": sheet, "columns": columns, "nrows": nrows, "skiprows": skiprows,
+        "header_row": header_row,
+    }
+    out = {k: v for k, v in binding.items() if v is not None}
+    if header_row:
+        out["blank_lines"] = header_row
+    return out
 
 
 def _read_input(
     data, source, *, sheet, columns, nrows, skiprows, correct_format, text=False,
-    sep=None, encoding=None, warn=False,
+    sep=None, encoding=None, warn=False, header_row=None,
 ) -> tuple[pd.DataFrame, str | None, dict[str, Any], list[str]]:
     """Read ``data`` with optional CSV format auto-correction.
 
@@ -56,7 +68,11 @@ def _read_input(
         # Only sniff a file that is actually there: read_frame owns the
         # missing-file / directory / empty-file messages.
         if is_csv_family(data) and Path(data).is_file() and Path(data).stat().st_size:
-            _opts, report_ = detect_csv_options(data)  # raises on ambiguous delimiter
+            # raises on an ambiguous delimiter or a multi-byte-looking file, unless the
+            # caller already named the sep/encoding.
+            _opts, report_ = detect_csv_options(
+                data, encoding=encoding, sep=sep, header_row=header_row
+            )
             fmt_kwargs = report_.as_read_binding()  # {encoding?, sep?, blank_lines?}
             notes = report_.notes
             if warn and notes:
@@ -69,14 +85,15 @@ def _read_input(
     fmt_kwargs.update({k: v for k, v in (("sep", sep), ("encoding", encoding)) if v is not None})
     df, source = _as_frame(
         data, source, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows,
-        text=text, **fmt_kwargs,
+        header_row=header_row, text=text, **fmt_kwargs,
     )
     if correct_format and not text and isinstance(data, (str, Path)):
         from .dataio import inference_losses
 
         if Path(data).is_file() and Path(data).suffix.lower() not in (".parquet", ".json"):
             losses = inference_losses(
-                data, df, sheet=sheet, columns=columns, skiprows=skiprows, **fmt_kwargs
+                data, df, sheet=sheet, columns=columns, skiprows=skiprows,
+                header_row=header_row, **fmt_kwargs,
             )
             if losses:
                 detail = "; ".join(f"{col}: {why}" for col, why in sorted(losses.items()))
@@ -88,7 +105,7 @@ def _read_input(
                         CleanFrameWarning,
                         stacklevel=3,
                     )
-    binding = _read_binding(sheet, columns, nrows, skiprows)
+    binding = _read_binding(sheet, columns, nrows, skiprows, header_row)
     if text:
         binding["text"] = True
     binding.update(fmt_kwargs)
@@ -103,15 +120,19 @@ def _as_frame(
     columns=None,
     nrows=None,
     skiprows=None,
+    header_row=None,
     text: bool = False,
     **read_kwargs,
 ) -> tuple[pd.DataFrame, str | None]:
     from ._util import ensure_string_columns
 
     if isinstance(data, pd.DataFrame):
-        if sheet is not None or nrows is not None or skiprows is not None:
+        if (
+            sheet is not None or nrows is not None or skiprows is not None
+            or header_row is not None
+        ):
             raise CleanFrameError(
-                "sheet=/nrows=/skiprows= selection applies to file inputs only, "
+                "sheet=/nrows=/skiprows=/header_row= selection applies to file inputs only, "
                 "not an in-memory DataFrame. Slice the DataFrame yourself first."
             )
         df = data
@@ -127,7 +148,7 @@ def _as_frame(
     if isinstance(data, (str, Path)):
         df = read_frame(
             data, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows,
-            text=text, **read_kwargs,
+            header_row=header_row, text=text, **read_kwargs,
         )
         return ensure_string_columns(df), source or str(data)
     raise CleanFrameError(f"Expected a DataFrame or file path, got {type(data).__name__}.")
@@ -166,11 +187,21 @@ def _resolve_planner(
                 f"planner must have a .plan() method, got {type(planner).__name__}."
             )
         return planner
-    if llm is None:
-        return RulesPlanner()
+    from .llm import coerce_exposure
     from .types import LLMExposure
 
-    if LLMExposure(str(llm_exposure)) is LLMExposure.NONE:
+    exposure = coerce_exposure(llm_exposure)  # a typo must fail even with llm=None
+    if llm is None:
+        if max_tokens_budget is not None:
+            warnings.warn(
+                "CleanFrame: max_tokens_budget was ignored because no llm= was given; "
+                "planning used the deterministic rules planner, which makes no LLM calls.",
+                CleanFrameWarning,
+                stacklevel=3,
+            )
+        return RulesPlanner()
+
+    if exposure is LLMExposure.NONE:
         # "none" means nothing leaves the machine, so there is no request to make.
         warnings.warn(
             "CleanFrame: llm_exposure='none' keeps everything local, so the LLM was not "
@@ -191,7 +222,7 @@ def _resolve_planner(
         )
     return LLMPlanner(
         client,
-        exposure=llm_exposure,
+        exposure=exposure,
         max_tokens_budget=max_tokens_budget,
         fallback="rules" if llm_fallback else None,
     )
@@ -208,6 +239,8 @@ def _check_on_drift(on_drift: Any) -> str:
         )
     return on_drift
 
+logger = logging.getLogger(__name__)
+
 
 def _check_options(options: Any) -> dict[str, Any]:
     if options is None:
@@ -221,7 +254,25 @@ def _check_options(options: Any) -> dict[str, Any]:
         raise CleanFrameError(
             f"options['max_diff_changes'] must be a non-negative int or None, got {cap!r}."
         )
+    unknown = sorted(str(k) for k in options if k not in _KNOWN_OPTIONS)
+    if unknown:
+        hints = []
+        for key in unknown:
+            close = difflib.get_close_matches(key, sorted(_KNOWN_OPTIONS), n=1, cutoff=0.6)
+            hints.append(f"{key!r}" + (f" (did you mean {close[0]!r}?)" if close else ""))
+        warnings.warn(
+            f"CleanFrame: unknown option(s) {', '.join(hints)} were ignored unless a custom "
+            f"detector reads them. Built-in options: {sorted(_KNOWN_OPTIONS)}.",
+            CleanFrameWarning,
+            stacklevel=3,
+        )
     return dict(options)
+
+
+#: Options the built-in planner and detectors read. Custom detectors may read others.
+_KNOWN_OPTIONS = frozenset(
+    {"max_diff_changes", "rename_columns", "category_map", "phone_country_code", "region", "dayfirst"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +294,7 @@ def clean(
     columns: list[str] | None = None,
     nrows: int | None = None,
     skiprows: int | list[int] | None = None,
+    header_row: int | None = None,
     correct_format: bool = True,
     text: bool = False,
     sep: str | None = None,
@@ -251,8 +303,8 @@ def clean(
 ) -> CleanResult:
     """Profile, plan, and clean ``data`` — the main entry point.
 
-    ``sheet``/``columns``/``nrows``/``skiprows`` select part of a file (see
-    :func:`read_frame`); the selection is recorded in the recipe's ``read:`` section
+    ``sheet``/``columns``/``nrows``/``skiprows``/``header_row`` select part of a file
+    (see :func:`read_frame`; ``header_row`` skips title rows above the header); the selection is recorded in the recipe's ``read:`` section
     so :func:`apply_recipe` re-reads the same slice. For a multi-sheet workbook, pass
     ``sheet=`` or use :func:`clean_workbook` to clean every sheet.
 
@@ -284,16 +336,25 @@ def clean(
     mode:
         ``"review"`` (default), ``"auto"``, or ``"strict"``.
     max_tokens_budget:
-        Hard cap that aborts LLM planning before it gets expensive.
+        Cap on LLM planning tokens. Checked before the call (from a ~4 chars/token
+        estimate) and again against the usage the provider reports, so a call that
+        overshoots is rejected but may already have been billed. Ignored (with a
+        warning) when no ``llm=`` is given.
+    llm_exposure:
+        ``"metadata"`` (default), ``"sample"`` (also sends example cell values) or
+        ``"none"`` (no request at all). Validated case-insensitively on every call.
 
     Returns
     -------
     CleanResult
         Cleaned dataframe plus recipe, diff, quarantine, issues, and report.
     """
+    from .llm import coerce_exposure
+
+    llm_exposure = coerce_exposure(llm_exposure).value  # fail on a typo before any work
     df, source, read_binding, read_notes = _read_input(
         data, source, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows,
-        correct_format=correct_format, text=text, sep=sep, encoding=encoding, warn=True,
+        header_row=header_row, correct_format=correct_format, text=text, sep=sep, encoding=encoding, warn=True,
     )
     schema_obj = _resolve_schema(target_schema if target_schema is not None else schema)
     options = _check_options(options)
@@ -342,6 +403,7 @@ def report(
     columns: list[str] | None = None,
     nrows: int | None = None,
     skiprows: int | list[int] | None = None,
+    header_row: int | None = None,
     correct_format: bool = True,
     text: bool = False,
     sep: str | None = None,
@@ -350,7 +412,7 @@ def report(
     """Profile ``data`` and return an HTML :class:`~cleanframe.result.Report` (no changes made)."""
     df, source, _, _ = _read_input(
         data, source, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows,
-        correct_format=correct_format, text=text, sep=sep, encoding=encoding, warn=True,
+        header_row=header_row, correct_format=correct_format, text=text, sep=sep, encoding=encoding, warn=True,
     )
     schema_obj = _resolve_schema(schema)
     profile = profile_dataframe(df)
@@ -374,6 +436,7 @@ def apply_recipe(
     columns: list[str] | None = None,
     nrows: int | None = None,
     skiprows: int | list[int] | None = None,
+    header_row: int | None = None,
     text: bool = False,
     sep: str | None = None,
     encoding: str | None = None,
@@ -393,13 +456,15 @@ def apply_recipe(
     _check_on_drift(on_drift)
 
     # Precedence: explicit call args > recipe-recorded read binding > whole file.
-    call = _read_binding(sheet, columns, nrows, skiprows)
+    call = _read_binding(sheet, columns, nrows, skiprows, header_row)
     call.update({k: v for k, v in (("sep", sep), ("encoding", encoding)) if v is not None})
     if text:
         call["text"] = True
     effective = {**(recipe_obj.read or {}), **call}
     if isinstance(data, pd.DataFrame) and effective:
-        unreplayable = {k for k in effective if k in ("sheet", "nrows", "skiprows")}
+        unreplayable = {
+            k for k in effective if k in ("sheet", "nrows", "skiprows", "header_row")
+        }
         if unreplayable and not call:
             warnings.warn(
                 f"CleanFrame: recipe's recorded read binding {sorted(unreplayable)} cannot "
@@ -420,6 +485,8 @@ def apply_recipe(
         )
     if check_drift and recipe_obj.source_fingerprint:
         drift = detect_drift(df, recipe_obj, source=source)
+        for finding in drift.findings:
+            logger.warning("drift [%s] %s", finding.kind, finding.message)
         if drift.has_drift:
             if on_drift == "error" or mode is Mode.STRICT:
                 raise DriftError(drift.render(), report=drift)
@@ -459,6 +526,7 @@ def suggest_update(
     columns: list[str] | None = None,
     nrows: int | None = None,
     skiprows: int | list[int] | None = None,
+    header_row: int | None = None,
 ) -> tuple[Recipe, DriftReport]:
     """Return a recipe patched to accommodate drift in ``data``, plus the drift report.
 
@@ -471,7 +539,7 @@ def suggest_update(
     planned instead of reporting every column as drifted.
     """
     original = _resolve_recipe(recipe)
-    call = _read_binding(sheet, columns, nrows, skiprows)
+    call = _read_binding(sheet, columns, nrows, skiprows, header_row)
     effective = {**(original.read or {}), **call}
     if isinstance(data, pd.DataFrame):
         effective = {k: v for k, v in effective.items() if k == "columns"}
@@ -487,6 +555,7 @@ def _patch_recipe_for_drift(recipe: Recipe, report: DriftReport, df: pd.DataFram
     from ._util import sample_non_null
     from .detectors.dates import _infer_formats
     from .fingerprint import fingerprint_dataframe
+    from .ops import parse_dates_to_datetime
 
     patched = Recipe.from_dict(recipe.to_dict())  # deep copy
     patched.source_fingerprint = recipe.source_fingerprint
@@ -516,13 +585,27 @@ def _patch_recipe_for_drift(recipe: Recipe, report: DriftReport, df: pd.DataFram
             if op.name != "parse_date" or src not in df.columns:
                 continue
             existing = list(op.params.get("formats") or [])
-            new_formats, _ = _infer_formats(
-                [str(v) for v in sample_non_null(df[src])], op.params.get("dayfirst")
+            # Learn formats only from the values the recipe cannot parse *today*.
+            # Inferring from the whole column would also "learn" a competing reading
+            # of values that already parse (03/03/2026 -> %m/%d/%Y) and break them.
+            values = [str(v) for v in sample_non_null(df[src])]
+            parsed = parse_dates_to_datetime(
+                pd.Series(values, dtype="object"),
+                existing,
+                dayfirst=bool(op.params.get("dayfirst", False)),
+                yearfirst=bool(op.params.get("yearfirst", False)),
             )
+            unmatched = [v for v, ok in zip(values, parsed.notna().tolist(), strict=True) if not ok]
+            new_formats, unparsed = _infer_formats(unmatched, op.params.get("dayfirst"))
             added = [f for f in new_formats if f not in existing]
             if added:
                 op.params["formats"] = existing + added
                 changes.append(f"added date format(s) {added} to {src!r}")
+            if unparsed or (unmatched and not added):
+                changes.append(
+                    f"could not infer a date format for {unparsed or len(unmatched)} value(s) "
+                    f"in {src!r} (e.g. {unmatched[0]!r}); add one by hand"
+                )
 
     if df is not None:
         patched.source_fingerprint = fingerprint_dataframe(df)
@@ -539,6 +622,7 @@ def infer_schema(
     columns: list[str] | None = None,
     nrows: int | None = None,
     skiprows: int | list[int] | None = None,
+    header_row: int | None = None,
     correct_format: bool = True,
     text: bool = False,
     sep: str | None = None,
@@ -551,7 +635,7 @@ def infer_schema(
     """
     frame, _, _, _ = _read_input(
         df, None, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows,
-        correct_format=correct_format, text=text, sep=sep, encoding=encoding,
+        header_row=header_row, correct_format=correct_format, text=text, sep=sep, encoding=encoding,
     )
     return _infer_schema(frame, name=name)
 

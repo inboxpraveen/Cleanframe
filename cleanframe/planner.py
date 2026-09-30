@@ -45,6 +45,7 @@ MODE_THRESHOLDS: dict[Mode, float] = {
 #: Canonical execution order for column ops. Ops not listed keep insertion order
 #: after all listed ones. THE contract that lets detectors stay independent.
 OP_ORDER: list[str] = [
+    "normalize_unicode",
     "strip_whitespace",
     "collapse_whitespace",
     "to_na",

@@ -13,7 +13,8 @@ under [`../wiki/`](../wiki/).
 | [Python API](api-reference.md) | `clean`, `report`, `apply_recipe`, … |
 | [Recipe specification](recipe-spec.md) | YAML format v1/v2, every op |
 | [Schema specification](schema-spec.md) | Target schemas and constraints |
-| [Detectors & ops](detectors-and-ops.md) | Built-in inventory + plugin hooks |
+| [Detectors & ops](detectors-and-ops.md) | Built-in inventory, how numbers are parsed |
+| [Plugins](plugins.md) | Write and ship custom ops/detectors that work in CI, code export and streaming |
 | [LLM planning](llm.md) | Providers, exposure modes, budgets |
 | [Production guide](production.md) | Scale, safety, pipelines, CI |
 | [Architecture](architecture.md) | Pipeline internals and invariants |

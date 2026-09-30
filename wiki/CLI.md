@@ -14,7 +14,10 @@ Accepted by every subcommand:
 
 | Flag | Meaning |
 |------|---------|
-| `--verbose`, `-v` | Print the run log: skipped columns, quarantine reasons, values an op could not parse (emitted by `clean` and `apply`) |
+| `--verbose`, `-v` | Print the run log: skipped columns, quarantine reasons, values an op could not parse (emitted by `clean` and `apply`), and turn on the library's `logging` output at INFO |
+| `--json` | Print **one** machine-readable JSON summary on stdout; every human-readable line moves to stderr (see [`--json`](#--json-run-summary)) |
+| `--plugin MODULE` | Import `MODULE` first so its custom ops/detectors are available (repeatable) |
+| `--no-plugins` | Do not auto-load installed `cleanframe.plugins` entry points or `CLEANFRAME_PLUGINS` |
 | `--debug` | Print a traceback on an internal error instead of a one-line message; the `CLEANFRAME_DEBUG=1` environment variable does the same |
 | `--help`, `-h` | Show usage |
 
@@ -43,6 +46,7 @@ Accepted by `report`, `clean`, `apply`, `suggest`, `infer-schema`:
 | `--columns A,B,C` | Read a subset of columns (filter; keeps file order) |
 | `--nrows N` | Read only the first N data rows |
 | `--skiprows N` | Skip the first N data rows; the header row is always kept |
+| `--header-row N` | The 0-based line the header is on, when title rows sit above it (recorded in the recipe `read:` section) |
 
 `--skiprows` and `--nrows` count *data rows* — identically for CSV, Excel, Parquet and JSON. A negative value is a usage error. Under `--skiprows`/`--nrows` the diff's `row_id` is relative to the loaded slice.
 
@@ -92,7 +96,7 @@ cleanframe clean examples/messy_customers.csv \
 
 Also takes the read and selection flags.
 
-The recipe is always written; cleaned data, code, report and quarantine only when their flag is given. An explicit `--recipe`/`--out`/`--code`/`--report` overrides the path `--out-dir` would have chosen.
+The recipe is always written; cleaned data, code, report and quarantine only when their flag is given. Re-running over unchanged input regenerates the same recipe bytes and is fine, but if the file at the recipe path **differs** from the recipe just planned (you hand-edited it, or it is from an older version) `clean` refuses and asks for `--overwrite` (or a different `--recipe`), so an edit is never lost silently. An explicit `--recipe`/`--out`/`--code`/`--report` overrides the path `--out-dir` would have chosen.
 
 A multi-sheet `.xlsx` auto-routes to workbook mode: `cleanframe clean file.xlsx` cleans every sheet; `cleanframe apply file.xlsx --recipe wb.yaml` replays a workbook recipe across sheets.
 
@@ -191,6 +195,32 @@ In workbook mode `--out-dir` writes the recipe and one rewritten `.xlsx`; there 
 ## Streaming mode
 
 `apply --chunksize N` streams the CSV out of core. `--report`, the selection flags (`--sheet`, `--columns`, `--nrows`, `--skiprows`) and the read flags (`--sep`, `--encoding`, `--text`) are refused: the recipe's `read:` section governs how the file is read and sliced.
+
+## `--json` run summary
+
+With `--json`, stdout carries exactly one JSON object — on success **and** on failure — and all the usual
+human-readable output goes to stderr, so `cleanframe ... --json | jq` is safe in a pipeline:
+
+```json
+{
+  "cleanframe_version": "0.4.0",
+  "command": "apply",
+  "input": "incoming.csv",
+  "status": "ok",
+  "exit_code": 0,
+  "outputs": {"data": "clean.csv"},
+  "rows_out": 5,
+  "rows_quarantined": 1,
+  "diff": {"changed_cells": 21, "rows_dropped": 1, "rows_before": 6, "rows_after": 5},
+  "drift": {"has_drift": false, "findings": []},
+  "warnings": []
+}
+```
+
+`status` is one of `ok`, `drift`, `validation_failed`, `error`. A failure adds `"error": {"type", "message"}`; a
+drift stop adds the findings (`kind`, `severity`, `column`, `message`). Fields depend on the command
+(`quality` for `report`, `chunks` and row counts for `apply --chunksize`, `sheets` for workbooks). Usage errors
+(exit `2`) are reported by `argparse` before the summary can be built.
 
 ## Exit codes
 

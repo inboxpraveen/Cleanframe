@@ -45,15 +45,17 @@ dependencies = [
 excel = ["openpyxl>=3.0"]
 parquet = ["pyarrow>=12.0"]
 llm = ["anthropic>=0.30", "openai>=1.0"]
+detect = ["charset-normalizer>=3"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "hypothesis>=6.80",
     "openpyxl>=3.0",
     "ruff>=0.4",
     "mypy>=1.8",
     "types-PyYAML>=6.0",
 ]
-all = ["openpyxl>=3.0", "pyarrow>=12.0", "anthropic>=0.30", "openai>=1.0"]
+all = ["openpyxl>=3.0", "pyarrow>=12.0", "anthropic>=0.30", "openai>=1.0", "charset-normalizer>=3"]
 
 [project.scripts]
 cleanframe = "cleanframe.cli:main"

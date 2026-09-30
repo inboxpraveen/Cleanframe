@@ -105,6 +105,9 @@ class WorkbookResult:
     untouched: dict[str, pd.DataFrame] = field(default_factory=dict)
     sheet_order: list[str] = field(default_factory=list)
     source: str | None = None
+    #: openpyxl ``sheet_state`` per sheet read (visible/hidden/veryHidden), so a hidden
+    #: tab is written back hidden instead of silently becoming visible.
+    sheet_states: dict[str, str] = field(default_factory=dict)
 
     @property
     def recipe(self) -> WorkbookRecipe:
@@ -145,6 +148,7 @@ class WorkbookResult:
         ensure_parent(path)
         tmp = path.with_name(path.name + ".cf-tmp")
         used_sheet_names: dict[str, str] = {}
+        written: dict[str, str] = {}  # written sheet name -> its original sheet_state
         try:
             with pd.ExcelWriter(tmp, engine="openpyxl") as xl:
                 for name in self.sheet_order:
@@ -163,6 +167,12 @@ class WorkbookResult:
                         )
                     used_sheet_names[sheet_name] = name
                     frame.to_excel(xl, sheet_name=sheet_name, index=False)
+                    written[sheet_name] = self.sheet_states.get(name, "visible")
+                # Restore hidden tabs, but never hide every sheet (Excel needs one visible).
+                if any(state == "visible" for state in written.values()):
+                    for sheet_name, state in written.items():
+                        if state != "visible":
+                            xl.sheets[sheet_name].sheet_state = state
             os.replace(tmp, path)
         except ImportError as exc:  # pragma: no cover
             tmp.unlink(missing_ok=True)
@@ -227,6 +237,9 @@ def read_workbook(
     if not isinstance(data, dict):  # single sheet requested as a bare name
         data = {want[0]: data}
     frames = {name: data[name] for name in want}
+    from .dataio import _warn_excel_structure
+
+    _warn_excel_structure(path, want)
     if not text:
         _warn_workbook_losses(path, want, frames)
     return frames
@@ -255,6 +268,22 @@ def _warn_workbook_losses(
             CleanFrameWarning,
             stacklevel=3,
         )
+
+
+def _sheet_states(path: str | Path | None) -> dict[str, str]:
+    """``{sheet name: visible|hidden|veryHidden}`` for an .xlsx/.xlsm (empty otherwise)."""
+    if path is None or Path(path).suffix.lower() not in (".xlsx", ".xlsm"):
+        return {}
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(path, read_only=True)
+        try:
+            return {ws.title: ws.sheet_state for ws in wb.worksheets}
+        finally:
+            wb.close()
+    except Exception:  # noqa: BLE001 - cosmetic; never worth failing a clean over
+        return {}
 
 
 def _load_all_sheets(
@@ -313,7 +342,10 @@ def clean_workbook(
             )
         else:
             untouched[name] = frame
-    return WorkbookResult(sheets=results, untouched=untouched, sheet_order=order, source=source)
+    return WorkbookResult(
+        sheets=results, untouched=untouched, sheet_order=order, source=source,
+        sheet_states=_sheet_states(source),
+    )
 
 
 def apply_workbook(
@@ -347,7 +379,10 @@ def apply_workbook(
             )
         else:
             untouched[name] = frame
-    return WorkbookResult(sheets=results, untouched=untouched, sheet_order=order, source=source)
+    return WorkbookResult(
+        sheets=results, untouched=untouched, sheet_order=order, source=source,
+        sheet_states=_sheet_states(source),
+    )
 
 
 def _resolve_workbook_recipe(recipe: WorkbookRecipe | str | Path | dict) -> WorkbookRecipe:

@@ -9,7 +9,7 @@ than no change at all. The rules below exist to protect it.
 
 ---
 
-## The five invariants (do not break these)
+## The six invariants (do not break these)
 
 1. **Determinism.** The same input must always produce the same recipe, the same
    cleaned frame, the same diff — on any machine, in any process. That means:
@@ -43,10 +43,24 @@ than no change at all. The rules below exist to protect it.
    name it in the op's signature (or in `aliases=`) so the loader accepts it — a
    parameter the loader silently ignores is a data-loss bug.
 
+   It applies to *guessing* as well: when a value is ambiguous (`1,500 g` — 1500 g or
+   1.5 g?) or malformed for the declared convention (`2,5` under `thousands=","`), the
+   result is a counted, warned null, never a plausible-looking number. Wrong numbers
+   are worse than missing ones. Likewise a clustering/merge rule must never fold together
+   values that differ in sign, decimal or grouping (`-300`/`300`).
+
 5. **Every changed cell is tracked.** The executor assigns a stable row id and
    tracks column lineage so `CellDiff` can attribute every change. If you add a
    transform that adds/removes/reorders columns or rows, make sure the lineage in
    `executor.py` stays correct and the diff still reconciles.
+
+6. **Exported code equals the executor — because it is the same code.** The pandas that
+   `result.code` writes must produce exactly what `apply_recipe` produces. Do not
+   re-implement an op's logic in `codegen.py`: put shared scalar logic in a small
+   self-contained module (`_numparse.py`, `_textparse.py`) or an existing `ops.py` helper
+   and *embed its source* with `inspect.getsource`, as codegen already does. Two
+   implementations drift; one implementation cannot. `tests/test_properties.py` fuzzes
+   this, and `tests/test_fix_numbers_and_parity.py` pins the known cases.
 
 If a change would weaken one of these, open an issue to discuss it first.
 
@@ -221,6 +235,14 @@ you.
 - **Every PR keeps `pytest` green.** New behavior needs a new test.
 - **Test the invariant, not just the happy path.** For anything order-sensitive, add
   a determinism assertion. For a new op with params, add the round-trip.
+- **Fuzz the invariants.** `tests/test_properties.py` uses [Hypothesis](https://hypothesis.readthedocs.io/)
+  to check parser totality/sign, generated-code == executor, determinism, recipe round-trip,
+  "nothing silently dropped" and streaming == whole-frame. CI runs a small deterministic
+  sample; to hunt for new bugs locally run
+  `CLEANFRAME_PROP_EXAMPLES=2000 CLEANFRAME_PROP_RANDOM=1 pytest tests/test_properties.py`.
+  If it finds one, add the minimal case as a normal example test as well.
+- **New op?** Decide `codegen=` / `streamable=` deliberately (see the [plugin guide](docs/plugins.md));
+  both default to "refuse", which is safe.
 - Prefer small, focused tests using the fixtures in `tests/conftest.py`.
 - `ruff check cleanframe tests` and `mypy` must both pass — CI runs them.
 
@@ -230,8 +252,9 @@ you.
   docstrings that explain *why* (the reader can see *what*).
 - Target Python 3.10+. Keep the core dependencies minimal (pandas, numpy, pyyaml,
   jinja2). Anything heavier goes in an optional extra in `pyproject.toml`.
-- No `print` in library code — return data or `log` to a list. `print` is for the
-  CLI only.
+- No `print` in library code — return data, add to the run `log`, or use
+  `logging.getLogger(__name__)` (the package installs a `NullHandler`). `print` is for the
+  CLI only, and under `--json` the CLI keeps stdout for the one JSON summary object.
 
 ## Pull requests
 

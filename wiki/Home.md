@@ -17,7 +17,8 @@ AI writes the cleaning recipe once. The recipe runs forever — deterministic, d
 | [API Reference](API-Reference) | Python API |
 | [Recipe Specification](Recipe-Specification) | YAML format v1 / v2 |
 | [Schema Specification](Schema-Specification) | Target schemas |
-| [Detectors and Ops](Detectors-and-Ops) | Built-ins + plugins |
+| [Detectors and Ops](Detectors-and-Ops) | Built-ins, how numbers are parsed |
+| [Plugins](Plugins) | Write and ship custom ops/detectors that work in CI, code export and streaming |
 | [LLM Planning](LLM-Planning) | Providers, exposure, budgets |
 | [Production Guide](Production-Guide) | Scale, safety, CI pipelines |
 | [Architecture](Architecture) | Internals and invariants |

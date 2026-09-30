@@ -109,7 +109,9 @@ class OpenAIClient:
         key_env: str = "OPENAI_API_KEY",
     ) -> None:
         self.model = model
-        self._api_key = api_key or os.environ.get(key_env) or os.environ.get("OPENAI_API_KEY")
+        # Only the variable this provider names is ever read. A key for one vendor must
+        # never be sent to another, so there is no OPENAI_API_KEY fallback here.
+        self._api_key = api_key or os.environ.get(key_env)
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._default_headers = default_headers
         self._key_env = key_env
@@ -117,12 +119,7 @@ class OpenAIClient:
     def complete(self, system: str, user: str, *, max_tokens: int = 2048) -> LLMResponse:
         if not self._api_key:
             raise LLMError(
-                f"{self._key_env} is not set"
-                + (
-                    " (or OPENAI_API_KEY as a fallback)."
-                    if self._key_env != "OPENAI_API_KEY"
-                    else "."
-                )
+                f"{self._key_env} is not set. Set it, or pass api_key= to the client."
             )
         try:
             import openai
@@ -245,14 +242,14 @@ _PROVIDER_LIST: list[ProviderSpec] = [
         "ollama",
         kind="openai",
         base_url="http://localhost:11434/v1",
-        key_env="OPENAI_API_KEY",
+        key_env="OLLAMA_API_KEY",  # optional: local servers need no key
         default_key="ollama",
     ),
     ProviderSpec(
         "lmstudio",
         kind="openai",
         base_url="http://localhost:1234/v1",
-        key_env="OPENAI_API_KEY",
+        key_env="LMSTUDIO_API_KEY",  # optional: local servers need no key
         default_key="lmstudio",
         aliases=("lm-studio",),
     ),
@@ -318,7 +315,10 @@ def get_client(spec: str) -> LLMClient:
         base_url = os.environ.get("OPENAI_BASE_URL") or info.base_url
     else:
         base_url = info.base_url
-    api_key = os.environ.get(info.key_env) or os.environ.get("OPENAI_API_KEY") or info.default_key
+    # Each provider reads only its own key variable (or a keyless local default).
+    # OPENAI_API_KEY is used solely by the openai / azure / openai-compatible family,
+    # whose key_env it is - it is never forwarded to any other vendor.
+    api_key = os.environ.get(info.key_env) or info.default_key
     # Google also accepts GEMINI_API_KEY
     if info.name == "google" and not api_key:
         api_key = os.environ.get("GEMINI_API_KEY")
@@ -425,8 +425,8 @@ def build_metadata(
         if exposure == LLMExposure.SAMPLE:
             entry["example_values"] = _sample_for_llm(cp, df[cp.name])
             entry["sample_note"] = (
-                "PII patterns (emails/phones) and long strings are redacted; short "
-                "category/text values are sent verbatim — approve before sending off-machine"
+                "emails, phones and long strings are redacted; short "
+                "category/text values are sent verbatim"
             )
         columns.append(entry)
 
@@ -488,10 +488,29 @@ def build_prompt(metadata: dict) -> tuple[str, str]:
     return system, user
 
 
-#: Ops the LLM may not emit under stricter modes (rules planner already gates these
-#: via confidence thresholds; the model has no confidence scores to filter on).
-_LLM_BLOCKED_AUTO = frozenset({"fill_na"})
-_LLM_BLOCKED_STRICT = frozenset({"fill_na", "drop_columns"})
+def coerce_exposure(value: Any) -> LLMExposure:
+    """Parse an ``llm_exposure`` value, case-insensitively, or raise :class:`LLMError`."""
+    if isinstance(value, LLMExposure):
+        return value
+    try:
+        return LLMExposure(str(value).strip().lower())
+    except ValueError:
+        valid = ", ".join(repr(e.value) for e in LLMExposure)
+        raise LLMError(f"llm_exposure must be one of {valid}; got {value!r}.") from None
+
+
+#: Ops an LLM plan may never contain, in any mode. Imputing a value or dropping a
+#: column is a human decision (CONTRIBUTING invariant #4: nothing is silently
+#: imputed or dropped); a model has no confidence score to gate it on, and
+#: ``cf.clean`` executes the recipe immediately, so "review" would not be a gate.
+_LLM_BLOCKED_OPS = frozenset({"fill_na", "drop_columns"})
+
+#: Validation policies that discard or blank data. A model may only ask for a check
+#: with a policy that keeps the offending row visible (quarantine / warn / error).
+_LLM_UNSAFE_ON_FAIL = frozenset({"drop", "null"})
+
+#: Rows the planner executes a model's recipe on to prove it runs.
+_DRY_RUN_ROWS = 200
 
 
 def _extract_json_object(text: str) -> str:
@@ -527,15 +546,15 @@ def _extract_json_object(text: str) -> str:
 
 
 def _finalize_llm_recipe(recipe: Recipe, *, mode: Mode) -> Recipe:
-    """Canonicalise op order and strip mode-inappropriate ops from an LLM recipe."""
+    """Canonicalise op order and strip ops an LLM plan may never contain.
+
+    ``fill_na`` and ``drop_columns`` are removed in every mode, and validation
+    rules that would drop or blank data are downgraded to quarantine; everything
+    removed is listed in ``recipe.meta["llm_blocked_ops"]``.
+    """
     from .planner import _finalize_ops
 
-    blocked = set()
-    if mode is Mode.STRICT:
-        blocked = set(_LLM_BLOCKED_STRICT)
-    elif mode is Mode.AUTO:
-        blocked = set(_LLM_BLOCKED_AUTO)
-
+    blocked = _LLM_BLOCKED_OPS
     removed: list[str] = []
     for col in recipe.columns:
         ops = [op for op in col.ops if op.name not in blocked]
@@ -543,6 +562,10 @@ def _finalize_llm_recipe(recipe: Recipe, *, mode: Mode) -> Recipe:
         col.ops = _finalize_ops(ops)
     removed += [op.name for op in recipe.frame_ops if op.name in blocked]
     recipe.frame_ops = [op for op in recipe.frame_ops if op.name not in blocked]
+    for rule in recipe.validations:
+        if rule.on_fail in _LLM_UNSAFE_ON_FAIL:
+            removed.append(f"on_fail: {rule.on_fail} on {rule.column} (kept as quarantine)")
+            rule.on_fail = "quarantine"
     if removed:
         recipe.meta["llm_blocked_ops"] = removed
     return recipe
@@ -690,7 +713,7 @@ class LLMPlanner:
         fallback: Any | None = "rules",
     ) -> None:
         self.client = client
-        self.exposure = LLMExposure(str(exposure)) if not isinstance(exposure, LLMExposure) else exposure
+        self.exposure = coerce_exposure(exposure)
         self.max_tokens_budget = max_tokens_budget
         self.max_output_tokens = max_output_tokens
         self.fallback = fallback
@@ -769,7 +792,26 @@ class LLMPlanner:
             raise BudgetExceeded(
                 f"Used {response.total_tokens} tokens, over max_tokens_budget={self.max_tokens_budget}."
             )
+        if self.exposure is LLMExposure.SAMPLE:
+            sent = [c["name"] for c in metadata["columns"] if c.get("example_values")]
+            warnings.warn(
+                "CleanFrame: llm_exposure='sample' sends example cell values off this "
+                "machine (short text/category values verbatim; emails, phones and long "
+                f"strings are redacted). Columns with values sent: {', '.join(sent) or 'none'}.",
+                CleanFrameWarning,
+                stacklevel=2,
+            )
         recipe = _finalize_llm_recipe(parse_recipe_json(response.text), mode=mode)
+        blocked = recipe.meta.get("llm_blocked_ops")
+        if blocked:
+            warnings.warn(
+                "CleanFrame: removed step(s) an LLM plan may not contain - a person must "
+                f"add these to the recipe: {'; '.join(blocked)}. "
+                "See recipe.meta['llm_blocked_ops'].",
+                CleanFrameWarning,
+                stacklevel=2,
+            )
+        self._dry_run(recipe, df)
         dropped = recipe.meta.get("llm_dropped")
         if dropped:
             warnings.warn(
@@ -781,6 +823,25 @@ class LLMPlanner:
                 stacklevel=2,
             )
         return recipe
+
+    @staticmethod
+    def _dry_run(recipe: Recipe, df: pd.DataFrame) -> None:
+        """Execute the model's recipe on a small head so an unusable plan fails here.
+
+        A rename collision, a rejected regex or a bad parameter would otherwise only
+        surface at execution, after planning succeeded, and bypass the fallback.
+        """
+        from .errors import ValidationFailure
+        from .executor import execute
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                execute(recipe, df.head(_DRY_RUN_ROWS), mode=Mode.REVIEW, max_diff_changes=0)
+        except ValidationFailure:
+            pass  # a data problem the recipe is meant to surface, not a bad plan
+        except Exception as exc:  # noqa: BLE001
+            raise LLMError(f"LLM produced a recipe that cannot run: {exc}") from exc
 
     def _fallback(self):
         from .planner import RulesPlanner
@@ -805,6 +866,7 @@ __all__ = [
     "PROVIDERS",
     "get_client",
     "list_providers",
+    "coerce_exposure",
     "build_metadata",
     "build_prompt",
     "parse_recipe_json",

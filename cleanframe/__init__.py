@@ -13,6 +13,8 @@ input → same output, every time. See the README for the full tour.
 
 from __future__ import annotations
 
+import logging as _logging
+
 from ._version import __version__
 
 # -- high-level API --------------------------------------------------------
@@ -52,6 +54,7 @@ from .ops import list_ops, register_op
 
 # -- planning / execution --------------------------------------------------
 from .planner import Planner, RulesPlanner, plan_recipe
+from .plugins import load_plugins
 
 # -- profiling -------------------------------------------------------------
 from .profile import ColumnProfile, DataFrameProfile, profile_dataframe
@@ -83,6 +86,10 @@ from .workbook import (
     read_workbook,
 )
 
+# A library must not configure logging. Applications opt in with
+# ``logging.getLogger("cleanframe").setLevel(...)`` (or the CLI's --verbose).
+_logging.getLogger("cleanframe").addHandler(_logging.NullHandler())
+
 __all__ = [
     "__version__",
     # api
@@ -103,6 +110,7 @@ __all__ = [
     "detector",
     "validator",
     "register_op",
+    "load_plugins",
     "DetectorContext",
     "run_detectors",
     "list_detectors",

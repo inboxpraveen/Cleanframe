@@ -10,6 +10,7 @@ declines it.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 import pandas as pd
 
@@ -21,6 +22,46 @@ from .base import DetectorContext, detector
 
 _DOUBLE_WS = re.compile(r"\s{2,}")
 _ALPHAWORDS = re.compile(r"^[A-Za-z][A-Za-z.'\- ]*$")
+
+
+_INVISIBLE_RE = re.compile("[\u200b\u2060\ufeff]")
+
+
+@detector("unicode", priority=8)
+def detect_unicode(series: pd.Series, ctx: DetectorContext) -> Issues:
+    """Flag invisible characters and decomposed accents that split otherwise-equal values."""
+    issues = Issues()
+    cp = ctx.column_profile
+    if cp is None or cp.count == 0 or not is_string_like(series):
+        return issues
+
+    strings = [v for v in sample_non_null(series) if isinstance(v, str)]
+    invisible = [v for v in strings if _INVISIBLE_RE.search(v)]
+    nbsp = [v for v in strings if "\u00a0" in v]
+    decomposed = [v for v in strings if unicodedata.normalize("NFC", v) != v]
+    if not (invisible or nbsp or decomposed):
+        return issues
+    parts = []
+    if invisible:
+        parts.append(f"{len(invisible)} with zero-width characters / BOMs")
+    if nbsp:
+        parts.append(f"{len(nbsp)} with non-breaking spaces")
+    if decomposed:
+        parts.append(f"{len(decomposed)} with decomposed accents")
+    issues.add(
+        "unicode_hygiene",
+        "Values that look normal but are not: " + ", ".join(parts),
+        severity=Severity.WARNING,
+        confidence=0.95,
+        evidence={
+            "zero_width": len(invisible),
+            "nbsp": len(nbsp),
+            "decomposed": len(decomposed),
+            "examples": _cap_examples([ascii(v) for v in (invisible or nbsp or decomposed)]),
+        },
+        ops=[Op("normalize_unicode")],
+    )
+    return issues
 
 
 @detector("whitespace", priority=10)

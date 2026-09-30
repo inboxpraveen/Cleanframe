@@ -21,7 +21,7 @@ from ..profile import COMMON_DATE_FORMATS, _looks_date
 from ..types import Op, Severity
 from .base import DetectorContext, detector
 
-_DAYFIRST_FORMATS = {"%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y"}
+_DAYFIRST_FORMATS = {"%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%d.%m.%y"}
 _MONTHFIRST_FORMATS = {"%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y"}
 _SLASH_DATE_RE = re.compile(r"^\s*(\d{1,2})[/\-.](\d{1,2})[/\-.]\d{2,4}\s*$")
 

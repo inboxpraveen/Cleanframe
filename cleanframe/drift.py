@@ -13,6 +13,7 @@ pass ``on_drift="warn"`` / ``--force`` only when you intentionally want to conti
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -233,6 +234,9 @@ def _detect_format_drift(df: pd.DataFrame, recipe: Recipe, report: DriftReport) 
         if src not in df.columns:
             continue
         for op in col_recipe.ops:
+            if op.name == "parse_number":
+                _detect_number_drift(df[src], src, op.params, report)
+                continue
             if op.name != "parse_date":
                 continue
             formats = op.params.get("formats")
@@ -268,6 +272,58 @@ def _detect_format_drift(df: pd.DataFrame, recipe: Recipe, report: DriftReport) 
                         },
                     )
                 )
+
+
+#: Share of digit-bearing values a ``parse_number`` op may reject before the column
+#: counts as drifted (a stray "12ab34" is data noise; "1.200,50" everywhere is a
+#: different number format).
+_NUMBER_DRIFT_BLOCK_RATE = 0.05
+_NUMBER_SAMPLE = 20_000
+
+
+def _detect_number_drift(series: pd.Series, src: str, params: dict, report: DriftReport) -> None:
+    """Flag a column whose numbers no longer fit the recipe's ``parse_number`` format.
+
+    Without this a European ``1.200,50`` replayed through a ``.``-decimal recipe is a
+    silent-wrong-number risk. Only values that *contain a digit* and still fail to
+    parse count — ``N/A`` and blanks are missing data, not a new format.
+    """
+    from ._numparse import parse_number_text
+
+    decimal = str(params.get("decimal", "."))
+    thousands = str(params.get("thousands", ","))
+    symbols = tuple(str(x) for x in (params.get("symbols") or ()))
+    values = [v for v in series.dropna().head(_NUMBER_SAMPLE).tolist() if isinstance(v, str)]
+    numeric = [v for v in values if any(ch.isdigit() for ch in v)]
+    if not numeric:
+        return
+    rejected = [
+        v for v in numeric if math.isnan(parse_number_text(v, decimal, thousands, symbols))
+    ]
+    if not rejected:
+        return
+    rate = len(rejected) / len(numeric)
+    examples = [str(v) for v in rejected[:3]]
+    # A share alone is too twitchy on a small file (one "$10-20" in 20 rows is 5%): a stop
+    # needs a few offenders, or most of the column.
+    blocking = rate >= 0.5 or (rate >= _NUMBER_DRIFT_BLOCK_RATE and len(rejected) >= 3)
+    report.findings.append(
+        DriftFinding(
+            kind="number_format_drift",
+            message=(
+                f'{len(rejected)} of {len(numeric)} numeric value(s) in "{src}" do not fit the '
+                f"recipe's number format (decimal {decimal!r}, thousands {thousands!r}; "
+                f"new: {examples[0]!r})"
+            ),
+            severity=Severity.WARNING if blocking else Severity.INFO,
+            column=src,
+            suggestion=(
+                "Set the op's decimal/thousands to the new convention "
+                "(e.g. decimal: ',' thousands: '.') or re-plan."
+            ),
+            evidence={"count": len(rejected), "rate": round(rate, 4), "examples": examples},
+        )
+    )
 
 
 def _closest_hint(col: str, candidates: list[str]) -> str | None:
