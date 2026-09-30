@@ -47,6 +47,33 @@ def _clean(value: str) -> str:
     return _WS.sub(" ", value).strip()
 
 
+_SIGNIFICANT = frozenset("-+.,()%$€£¥₹")
+#: A percent sign or currency symbol changes what a value *is*, wherever it sits: "10 %" is not "10".
+_ALWAYS_SIGNIFICANT = frozenset("%$€£¥₹")
+
+
+def _skeleton(value: str) -> str:
+    """The characters that make one *number-like* value differ from another.
+
+    Digits, plus any sign/decimal/grouping/currency mark touching a digit (or a
+    leading sign). ``-1,200`` / ``1,200`` / ``12.00`` / ``A-1`` / ``A1`` all have
+    different skeletons, so they are never one category — whereas ``St. Louis`` and
+    ``St Louis`` (punctuation between letters) share one.
+    """
+    out = []
+    last = len(value) - 1
+    for i, c in enumerate(value):
+        if c.isdigit() or c in _ALWAYS_SIGNIFICANT:
+            out.append(c)
+        elif c in _SIGNIFICANT and (
+            (i > 0 and value[i - 1].isdigit())
+            or (i < last and value[i + 1].isdigit())
+            or (i == 0 and c in "-+")
+        ):
+            out.append(c)
+    return "".join(out)
+
+
 def _casing_rank(s: str) -> int:
     """Tie-break spellings: short CODE > Title > Mixed > lower > UPPER.
 
@@ -97,7 +124,9 @@ def _cluster(counts: dict[str, int], seed_map: dict[str, str] | None) -> dict[st
         key = normalize_key(value)
         if not key:
             continue  # punctuation-only values ("-", "?") are not category variants
-        groups.setdefault(key, {})[value] = n
+        # Numbers/codes that differ in sign, decimal or grouping are different values
+        # (``-300`` is not ``300``; ``12.00`` is not ``1,200``), never spellings.
+        groups.setdefault(f"{key}\x00{_skeleton(value)}", {})[value] = n
 
     canon_of_group = {key: _canonical(spellings) for key, spellings in groups.items()}
 
@@ -117,6 +146,8 @@ def _cluster(counts: dict[str, int], seed_map: dict[str, str] | None) -> dict[st
             # frequent categories would be silently merged (semantic inversion).
             rep_count = sum(groups[rep].values())
             if _is_negation_pair(canon, canon_of_group[rep]):
+                continue
+            if _skeleton(canon) != _skeleton(canon_of_group[rep]):
                 continue
             if (
                 similarity(canon, canon_of_group[rep]) >= _FUZZY_THRESHOLD
@@ -176,7 +207,7 @@ def detect_categories(series: pd.Series, ctx: DetectorContext) -> Issues:
     distinct_after = len({counts_key if counts_key not in mapping else mapping[counts_key]
                           for counts_key in counts})
     # Confidence: purely case/space merges are safe; fuzzy typo merges less so.
-    fuzzy = any(normalize_key(k) != normalize_key(v) for k, v in mapping.items())
+    fuzzy = any(k.casefold() != v.casefold() for k, v in mapping.items())
     confidence = 0.7 if fuzzy else 0.9
 
     issues.add(

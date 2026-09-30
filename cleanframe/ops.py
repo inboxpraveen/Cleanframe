@@ -31,7 +31,20 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ._util import safe_compile_regex
+from ._numparse import (
+    parse_int_text,
+    parse_number_text,
+    parse_plain_number,
+    split_number_unit,
+)
+from ._textparse import (
+    detect_currency_text,
+    map_exact,
+    map_folded,
+    normalize_unicode_text,
+    title_case_text,
+)
+from ._util import is_pure_string, map_pure, safe_compile_regex
 from .errors import OpError, RecipeError
 from .types import Op
 
@@ -64,6 +77,15 @@ class OpSpec:
     #: True when a mapping *is* the payload (``normalize_values``), so its keys
     #: are user data rather than parameter names.
     free_form: bool = False
+    #: ``codegen(params, column) -> list[str]``: unindented statements that read and
+    #: write ``df[column]`` (or ``df``, for a frame op) in exported standalone pandas.
+    #: Without it, exporting a recipe that uses the op raises instead of skipping it.
+    codegen: Callable[[dict, str], list[str]] | None = None
+    #: Module-level source (imports, helper functions) the generated code needs.
+    helpers: str = ""
+    #: The op gives the same result chunk-by-chunk as on the whole frame. Streaming
+    #: refuses every op that does not say so (default-deny).
+    streamable: bool = False
 
 
 OP_REGISTRY: dict[str, OpSpec] = {}
@@ -77,8 +99,16 @@ def register_op(
     compact: Callable[[dict], Any] | None = None,
     aliases: tuple[str, ...] = (),
     free_form: bool = False,
+    codegen: Callable[[dict, str], list[str]] | None = None,
+    helpers: str = "",
+    streamable: bool = False,
 ) -> Callable[[Callable], Callable]:
     """Register a transform under ``name``. See module docstring for scopes.
+
+    ``codegen`` / ``helpers`` let ``result.code`` export the op as standalone pandas;
+    ``streamable=True`` promises the op is row-independent so ``stream_apply`` may run
+    it chunk by chunk. Both are opt-in: an op that declares neither is refused by the
+    exporter and by streaming rather than silently mishandled.
 
     ``coerce`` maps the compact recipe form to canonical params (load direction).
     ``compact`` is the inverse for serialisation: it maps canonical params back to
@@ -97,6 +127,7 @@ def register_op(
             doc=func.__doc__ or "",
             known_params=frozenset(_signature_params(func)) | frozenset(aliases),
             free_form=free_form,
+            codegen=codegen, helpers=helpers, streamable=streamable,
         )
         return func
 
@@ -138,8 +169,17 @@ def op_to_compact(op: Op) -> Any:
 def get_op(name: str) -> OpSpec:
     spec = OP_REGISTRY.get(name)
     if spec is None:
+        # A recipe may name an op from an installed plugin nobody has imported yet
+        # (e.g. `cleanframe apply` in CI). Discover plugins once before giving up.
+        from .plugins import load_plugins
+
+        load_plugins()
+        spec = OP_REGISTRY.get(name)
+    if spec is None:
         raise RecipeError(
-            f"Unknown op {name!r}. Known ops: {', '.join(sorted(OP_REGISTRY))}."
+            f"Unknown op {name!r}. Known ops: {', '.join(sorted(OP_REGISTRY))}. If it comes "
+            "from a plugin, install that package or pass --plugin MODULE "
+            "(or set CLEANFRAME_PLUGINS)."
         )
     return spec
 
@@ -223,6 +263,8 @@ def apply_frame_op(op: Op, df: pd.DataFrame) -> pd.DataFrame:
 # Small helpers (all NaN-preserving and deterministic)
 # ---------------------------------------------------------------------------
 def _is_na(v: Any) -> bool:
+    if isinstance(v, str):
+        return False  # by far the commonest cell; skip the pandas call
     if v is None:
         return True
     if isinstance(v, float):
@@ -239,9 +281,7 @@ def _is_pure_string(series: pd.Series) -> bool:
     NaN a stray non-string cell, and object→object keeps the output dtype identical to
     the elementwise map. (Non-object string dtypes stay on the elementwise path so the
     result dtype never changes from the historical behaviour.)"""
-    return pd.api.types.is_object_dtype(series.dtype) and pd.api.types.infer_dtype(
-        series, skipna=True
-    ) in ("string", "empty")
+    return is_pure_string(series)
 
 
 def _apply_str(
@@ -305,12 +345,36 @@ def uppercase(series: pd.Series) -> pd.Series:
 
 @register_op("title_case")
 def title_case(series: pd.Series) -> pd.Series:
-    """Title-case string cells (``"new  YORK"`` -> ``"New York"``)."""
-    return _apply_str(
-        series,
-        lambda s: _WS_RE.sub(" ", s).strip().title(),
-        vec=lambda s: s.str.replace(r"\s+", " ", regex=True).str.strip().str.title(),
-    )
+    """Title-case string cells (``"new  YORK"`` -> ``"New York"``; ``"3rd st"`` stays ``"3rd St"``)."""
+    return _apply_str(series, title_case_text)
+
+
+_UNICODE_FORMS = frozenset({"NFC", "NFD", "NFKC", "NFKD"})
+
+
+def _coerce_normalize_unicode(raw: Any) -> dict:
+    form = raw.get("form", "NFC") if isinstance(raw, dict) else (raw or "NFC")
+    form = str(form).upper()
+    if form not in _UNICODE_FORMS:
+        raise RecipeError(
+            f"Op 'normalize_unicode' form must be one of {sorted(_UNICODE_FORMS)}, got {form!r}."
+        )
+    return {"form": form}
+
+
+@register_op(
+    "normalize_unicode",
+    coerce=_coerce_normalize_unicode,
+    compact=lambda p: _prune(p, {"form": "NFC"}),
+    streamable=True,
+    codegen=lambda params, column: [
+        f"df[{column!r}] = _smap(df[{column!r}], "
+        f"lambda v: normalize_unicode_text(v, {params.get('form', 'NFC')!r}))"
+    ],
+)
+def normalize_unicode(series: pd.Series, form: str = "NFC") -> pd.Series:
+    """Unicode-normalise text (NFC by default) and remove zero-width spaces / BOMs / NBSPs."""
+    return _apply_str(series, lambda s: normalize_unicode_text(s, form))
 
 
 @register_op("capitalize")
@@ -360,11 +424,25 @@ def _coerce_replace(raw: Any) -> dict:
         raise RecipeError("Op 'replace' expects a mapping with 'pattern' and 'repl'.")
     if "pattern" not in raw:
         raise RecipeError("Op 'replace' requires a 'pattern' parameter.")
-    return {
-        "pattern": raw["pattern"],
-        "repl": raw.get("repl", ""),
-        "regex": bool(raw.get("regex", True)),
-    }
+    pattern, repl = raw["pattern"], raw.get("repl", "")
+    if not isinstance(pattern, str) or not isinstance(repl, str):
+        raise RecipeError(
+            f"Op 'replace' pattern and repl must be text, got {pattern!r} / {repl!r}. "
+            "Quote yes/no/null and numbers."
+        )
+    regex = bool(raw.get("regex", True))
+    if regex:
+        try:
+            compiled = safe_compile_regex(pattern)
+        except ValueError as exc:
+            raise RecipeError(f"Op 'replace' pattern rejected: {exc}") from exc
+        refs = [int(g) for g in re.findall(r"(?<!\\)\\(\d+)", repl)]
+        if refs and max(refs) > compiled.groups:
+            raise RecipeError(
+                f"Op 'replace' repl {repl!r} refers to group {max(refs)} but the pattern "
+                f"has only {compiled.groups}."
+            )
+    return {"pattern": pattern, "repl": repl, "regex": regex}
 
 
 @register_op(
@@ -402,6 +480,16 @@ DEFAULT_NA_TOKENS = [
 ]
 
 
+def _require_string_tokens(tokens: Any) -> None:
+    """YAML 1.1 reads an unquoted ``no`` / ``null`` / ``~`` as a bool / None."""
+    for t in tokens or ():
+        if not isinstance(t, str):
+            raise RecipeError(
+                f"Op 'to_na' token {t!r} is not text. YAML reads unquoted yes/no/on/off/null/~ "
+                "and bare numbers as non-strings — quote it (e.g. \"no\")."
+            )
+
+
 def _coerce_to_na(raw: Any) -> dict:
     if raw is None:
         return {"tokens": None, "case_insensitive": True}
@@ -411,12 +499,15 @@ def _coerce_to_na(raw: Any) -> dict:
             tokens = [tokens]
         if tokens is not None and not isinstance(tokens, (list, tuple)):
             raise RecipeError("Op 'to_na' tokens must be a string or a list of strings.")
+        _require_string_tokens(tokens)
         return {
             "tokens": list(tokens) if tokens is not None else None,
             "case_insensitive": bool(raw.get("case_insensitive", True)),
         }
     if isinstance(raw, (list, tuple)):
+        _require_string_tokens(raw)
         return {"tokens": list(raw), "case_insensitive": True}
+    _require_string_tokens([raw])
     return {"tokens": [raw], "case_insensitive": True}
 
 
@@ -546,11 +637,17 @@ def _normalize_phone_scalar(value: Any, default_cc: str | None) -> Any:
         return np.nan
     if had_plus:
         return "+" + digits
+    if digits.startswith("00"):
+        # International call prefix: 0044 20 7946 0958 is +44 20 7946 0958, whatever
+        # the default country code is.
+        return "+" + digits[2:] if digits[2:] else np.nan
     if default_cc:
         cc = re.sub(r"\D", "", str(default_cc))
         if cc and digits.startswith(cc):
             return "+" + digits
         local = digits.lstrip("0")
+        if len(local) < 7:
+            return digits  # too short to be a phone number: never invent a country code
         return "+" + cc + local
     return digits
 
@@ -568,7 +665,7 @@ def normalize_phone(series: pd.Series, default_country_code: str | None = None) 
     code (dropping a national trunk ``0``). This is intentionally lightweight — for
     strict E.164 across many regions, plug in a libphonenumber-backed detector.
     """
-    return series.map(lambda v: _normalize_phone_scalar(v, default_country_code))
+    return map_pure(series, lambda v: _normalize_phone_scalar(v, default_country_code))
 
 
 # ---------------------------------------------------------------------------
@@ -578,60 +675,29 @@ def _coerce_parse_number(raw: Any) -> dict:
     raw = raw or {}
     if not isinstance(raw, dict):
         raise RecipeError("Op 'parse_number' expects a mapping of parameters.")
+    decimal, thousands = raw.get("decimal", "."), raw.get("thousands", ",")
+    if not isinstance(decimal, str) or len(decimal) != 1:
+        raise RecipeError(f"Op 'parse_number' decimal must be one character, got {decimal!r}.")
+    if not isinstance(thousands, str) or len(thousands) > 1:
+        raise RecipeError(
+            f"Op 'parse_number' thousands must be one character or \"\", got {thousands!r}."
+        )
+    if decimal == thousands:
+        raise RecipeError("Op 'parse_number' decimal and thousands must differ.")
     return {
-        "decimal": raw.get("decimal", "."),
-        "thousands": raw.get("thousands", ","),
-        "symbols": list(raw.get("symbols", [])),
+        "decimal": decimal,
+        "thousands": thousands,
+        "symbols": [str(x) for x in (raw.get("symbols") or [])],
     }
 
 
-#: A single, well-formed numeric token: optional sign, int/decimal, optional exponent.
-_NUMBER_TOKEN_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
-
-
 def _parse_number_scalar(value: Any, decimal: str, thousands: str, symbols: list[str]) -> float:
-    if _is_na(value):
-        return np.nan
-    if isinstance(value, bool):
-        return np.nan
-    if isinstance(value, (int, float)):
-        return float(value)
-    s = str(value).strip().replace("−", "-")  # normalise unicode minus
-    if s == "":
-        return np.nan
-    negative = False
-    if s.startswith("(") and s.endswith(")"):
-        negative = True
-        s = s[1:-1]
-    for sym in symbols:
-        s = s.replace(sym, "")
-    if thousands:
-        s = s.replace(thousands, "")
-    if decimal != ".":
-        s = s.replace(decimal, ".")
-    s = s.strip()
-    # Accounting/ERP trailing minus ("1234.56-") signals a negative.
-    trailing_minus = s.endswith("-")
-    # Extract ONE well-formed numeric token. If any *other* digits remain (e.g.
-    # "12ab34", "10-12"), the string is not a single number — return NaN instead of
-    # silently fusing the disjoint digit groups. Leading/trailing unit text
-    # ("1200 INR") carries no stray digits, so it is still stripped cleanly.
-    m = _NUMBER_TOKEN_RE.search(s)
-    if not m:
-        return np.nan
-    token = m.group(0)
-    leftover = s[: m.start()] + s[m.end() :]
-    if any(ch.isdigit() for ch in leftover):
-        return np.nan
-    try:
-        result = float(token)
-    except ValueError:
-        return np.nan
-    if negative:
-        result = -abs(result)
-    elif trailing_minus and not token.startswith("-"):
-        result = -result
-    return result
+    """One cell → float, or NaN when it is not a single well-formed number.
+
+    The implementation lives in :mod:`cleanframe._numparse` so the generated
+    standalone code can embed the very same source.
+    """
+    return parse_number_text(value, decimal, thousands, tuple(symbols))
 
 
 @register_op(
@@ -652,7 +718,7 @@ def parse_number(
     NaN. Configure ``decimal``/``thousands`` for European formats.
     """
     syms = [str(s) for s in (symbols or [])]
-    return series.map(lambda v: _parse_number_scalar(v, decimal, thousands, syms))
+    return map_pure(series, lambda v: _parse_number_scalar(v, decimal, thousands, syms))
 
 
 #: Every accepted ``cast`` target. A typo here used to load and fail at replay.
@@ -701,6 +767,15 @@ def cast(series: pd.Series, to: str) -> pd.Series:
     if to in ("float", "float64", "number"):
         return pd.to_numeric(series, errors="coerce").astype("float64")
     if to in ("int", "integer", "int64"):
+        if pd.api.types.is_object_dtype(series.dtype) or pd.api.types.is_string_dtype(
+            series.dtype
+        ):
+            # Exact per-cell conversion: float64 would round IDs above 2**53.
+            return pd.Series(
+                pd.array([parse_int_text(v) for v in series], dtype="Int64"),
+                index=series.index,
+                name=series.name,
+            )
         numeric = pd.to_numeric(series, errors="coerce")
         return numeric.round().astype("Int64")
     if to in ("string", "str", "text"):
@@ -774,6 +849,12 @@ COMMON_DATE_FORMATS = [
     "%d-%b-%y",
     "%b %d %Y",
     "%d %b %y",
+    # appended (never inserted): earlier formats keep winning on existing recipes
+    "%b %d, %y",
+    "%B %d, %y",
+    "%d %b, %Y",
+    "%d.%m.%y",
+    "%Y.%m.%d",
 ]
 
 
@@ -803,7 +884,9 @@ def _coerce_parse_date(raw: Any) -> dict:
     }
 
 
-_DAYFIRST_SLASH = frozenset({"%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y"})
+_DAYFIRST_SLASH = frozenset(
+    {"%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%d.%m.%y"}
+)
 _MONTHFIRST_SLASH = frozenset({"%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y"})
 
 
@@ -822,10 +905,14 @@ def _naive_datetimes(series: pd.Series) -> pd.Series:
 
     A value carrying an offset (``2024-01-01T10:00:00Z``) parses to a tz-aware series,
     which cannot be stored in a tz-naive one: older pandas silently turns the column to
-    ``object`` and the following ``.dt`` access then fails.
+    ``object`` and the following ``.dt`` access then fails. A column with one offset
+    keeps its local wall-clock; a column mixing offsets has no single wall-clock, so
+    it is converted to UTC.
     """
     if getattr(series.dtype, "tz", None) is not None:
-        return series.dt.tz_convert("UTC").dt.tz_localize(None)
+        # Keep the wall-clock the file shows: 2024-01-01T02:00+05:30 is 2024-01-01,
+        # not the UTC calendar day before it.
+        return series.dt.tz_localize(None)
     if not pd.api.types.is_datetime64_any_dtype(series.dtype):
         converted = pd.to_datetime(series, errors="coerce", utc=True)
         if getattr(converted.dtype, "tz", None) is not None:
@@ -841,6 +928,33 @@ def parse_dates_to_datetime(
     yearfirst: bool = False,
 ) -> pd.Series:
     """Parse to a datetime64 Series (NaT where nothing matched). Shared with drift."""
+    if formats:
+        # Explicit formats make each cell's result depend only on the cell, so a
+        # repetitive text column is parsed once per distinct value. (Format-less
+        # parsing infers from the whole column and must see all of it.)
+        from . import _util
+
+        n = len(series)
+        if n >= _util._UNIQUE_MAP_MIN_ROWS and is_pure_string(series):
+            codes, uniques = pd.factorize(series)
+            if len(uniques) <= n * _util._UNIQUE_MAP_MAX_SHARE:
+                probe = pd.Series([*uniques, np.nan], dtype=object)
+                parsed = _parse_dates_core(probe, formats, dayfirst, yearfirst)
+                out = parsed.iloc[codes]  # -1 (missing) selects the trailing NaT
+                out.index = series.index
+                out.name = series.name
+                return out
+    return _parse_dates_core(series, formats, dayfirst, yearfirst)
+
+
+def _parse_dates_core(
+    series: pd.Series,
+    formats: list[str] | None,
+    dayfirst: bool = False,
+    yearfirst: bool = False,
+) -> pd.Series:
+    """The parsing algorithm itself. Self-contained on purpose: :mod:`cleanframe.codegen`
+    embeds this function's source verbatim into exported code."""
     flex_fallback = False
     if not formats:
         # No explicit formats: coalesce over the common formats first — deterministic
@@ -943,34 +1057,62 @@ def normalize_values(
         def fn(v: Any) -> Any:
             if _is_na(v):
                 return v
-            return folded.get(str(v).strip().casefold(), v)
+            return map_folded(folded, v)
 
-        return series.map(fn)
+        return map_pure(series, fn)
 
     def fn_exact(v: Any) -> Any:
         if _is_na(v):
             return v
-        return mapping.get(v, mapping.get(str(v), v))
+        return map_exact(mapping, v)
 
-    return series.map(fn_exact)
+    return map_pure(series, fn_exact)
 
 
 # ---------------------------------------------------------------------------
 # Currency extraction (column op that emits an extra column)
 # ---------------------------------------------------------------------------
 #: Symbol / trailing-code -> ISO 4217 code. Deliberately small and explicit.
-CURRENCY_SYMBOLS = {
-    "₹": "INR",
-    "$": "USD",
-    "€": "EUR",
-    "£": "GBP",
-    "¥": "JPY",
-    "₩": "KRW",
-    "₽": "RUB",
-    "R$": "BRL",
-    "¢": "USD",
-}
-_CODE_RE = re.compile(r"\b([A-Z]{3})\b")
+CURRENCY_SYMBOLS = dict(
+    sorted(
+        {
+            "₹": "INR",
+            "$": "USD",
+            "US$": "USD",
+            "€": "EUR",
+            "£": "GBP",
+            "¥": "JPY",
+            "₩": "KRW",
+            "₽": "RUB",
+            "₺": "TRY",
+            "₫": "VND",
+            "₱": "PHP",
+            "₪": "ILS",
+            "฿": "THB",
+            "R$": "BRL",
+            "A$": "AUD",
+            "AU$": "AUD",
+            "C$": "CAD",
+            "CA$": "CAD",
+            "HK$": "HKD",
+            "NZ$": "NZD",
+            "S$": "SGD",
+            "AR$": "ARS",
+            "MX$": "MXN",
+            "NT$": "TWD",
+            "CL$": "CLP",
+            "CO$": "COP",
+            "¢": "USD",
+        }.items(),
+        # Longest first: "R$" must be tried before "$", or every dollar-family
+        # currency reads as USD.
+        key=lambda kv: -len(kv[0]),
+    )
+)
+#: Symbols spelled with letters, matched only when not glued to another letter.
+CURRENCY_WORDS = {"Rs": "INR"}
+_CURRENCY_ITEMS = tuple(CURRENCY_SYMBOLS.items())
+_CURRENCY_WORD_ITEMS = tuple(CURRENCY_WORDS.items())
 
 
 def _coerce_extract_currency(raw: Any) -> dict:
@@ -988,19 +1130,17 @@ def _coerce_extract_currency(raw: Any) -> dict:
 def _detect_currency_scalar(value: Any, default: str | None) -> Any:
     if _is_na(value):
         return default if default is not None else np.nan
-    s = str(value)
-    for symbol, code in CURRENCY_SYMBOLS.items():
-        if symbol in s:
-            return code
-    m = _CODE_RE.search(s.upper())
-    if m and m.group(1) in _KNOWN_CODES:
-        return m.group(1)
+    code = detect_currency_text(str(value), _CURRENCY_ITEMS, _CURRENCY_WORD_ITEMS, _KNOWN_CODES)
+    if code is not None:
+        return code
     return default if default is not None else np.nan
 
 
-_KNOWN_CODES = set(CURRENCY_SYMBOLS.values()) | {
+_KNOWN_CODES = frozenset(CURRENCY_SYMBOLS.values()) | frozenset(CURRENCY_WORDS.values()) | {
     "USD", "EUR", "GBP", "INR", "JPY", "CNY", "AUD", "CAD", "CHF", "SGD",
     "HKD", "NZD", "SEK", "NOK", "DKK", "ZAR", "AED", "SAR", "KRW", "RUB", "BRL",
+    "MXN", "ARS", "CLP", "COP", "TWD", "TRY", "PLN", "CZK", "HUF", "ILS", "THB",
+    "MYR", "IDR", "PHP", "VND", "NGN", "EGP", "KES", "PKR", "BDT", "LKR", "UAH", "RON",
 }
 
 
@@ -1029,7 +1169,7 @@ def extract_currency(
     why it returns a :class:`ColumnOpResult`.
     """
     target = to or f"{series.name}_currency"
-    codes = series.map(lambda v: _detect_currency_scalar(v, default))
+    codes = map_pure(series, lambda v: _detect_currency_scalar(v, default))
     codes.name = target
     return ColumnOpResult(series=series, emit={target: codes})
 
@@ -1037,10 +1177,24 @@ def extract_currency(
 # ---------------------------------------------------------------------------
 # Frame ops
 # ---------------------------------------------------------------------------
+def _column_names(values: Any, op: str) -> list[str]:
+    """Column names from a recipe list. YAML reads a bare ``2024`` as an int (and ``yes``
+    as a bool); an int is a perfectly good column name, a bool means the user forgot to quote."""
+    names = []
+    for v in values:
+        if isinstance(v, bool) or v is None:
+            raise RecipeError(
+                f"Op {op!r} column name {v!r} is not text. YAML reads unquoted yes/no/null as "
+                "booleans/None - quote it."
+            )
+        names.append(v if isinstance(v, str) else str(v))
+    return names
+
+
 def _coerce_dedup(raw: Any) -> dict:
     raw = raw or {}
     if isinstance(raw, (list, tuple)):
-        return {"subset": list(raw), "keep": "first", "ignore_case": False}
+        return {"subset": _column_names(raw, "dedup"), "keep": "first", "ignore_case": False}
     if not isinstance(raw, dict):
         raise RecipeError("Op 'dedup' expects a mapping or a list of subset columns.")
     keep = raw.get("keep", "first")
@@ -1056,7 +1210,7 @@ def _coerce_dedup(raw: Any) -> dict:
     if subset is not None and not isinstance(subset, (list, tuple)):
         raise RecipeError("Op 'dedup' subset must be a column name or a list of names.")
     return {
-        "subset": list(subset) if subset else None,
+        "subset": _column_names(subset, "dedup") if subset else None,
         "keep": keep,
         "ignore_case": bool(raw.get("ignore_case", False)),
     }
@@ -1083,16 +1237,29 @@ def dedup(
         missing = [c for c in subset if c not in df.columns]
         if missing:
             raise OpError(f"dedup subset references unknown column(s): {missing}")
-    if not ignore_case:
-        return df.drop_duplicates(subset=subset, keep=keep)
-
-    # Case/whitespace-insensitive: build a normalized key frame, dedup on it.
     key_cols = subset if subset else list(df.columns)
-    key = df[key_cols].apply(
-        lambda col: col.map(lambda v: v.strip().casefold() if isinstance(v, str) else v)
-    )
+    key = df[key_cols].apply(_dedup_key_column, ignore_case=ignore_case)
     mask = ~key.duplicated(keep=keep if keep is not False else False)
     return df[mask]
+
+
+def _dedup_key_column(col: pd.Series, ignore_case: bool = False) -> pd.Series:
+    """The comparison key for one column: case-folded strings when asked, and booleans
+    kept distinct from the numbers they compare equal to (``1 == True == 1.0``)."""
+    if not pd.api.types.is_object_dtype(col.dtype):
+        return col
+    mixed = pd.api.types.infer_dtype(col, skipna=True).startswith("mixed")
+
+    def fn(v: Any) -> Any:
+        if isinstance(v, bool):
+            return ("bool", v)
+        if ignore_case and isinstance(v, str):
+            return v.strip().casefold()
+        return v
+
+    if not (ignore_case or mixed):
+        return col
+    return col.map(fn)
 
 
 def _coerce_drop_columns(raw: Any) -> dict:
@@ -1104,9 +1271,7 @@ def _coerce_drop_columns(raw: Any) -> dict:
         cols = list(raw.get("columns", []))
     else:
         raise RecipeError("Op 'drop_columns' expects a column name or list.")
-    if any(not isinstance(c, str) for c in cols):
-        raise RecipeError("Op 'drop_columns' expects column names as strings.")
-    return {"columns": cols}
+    return {"columns": _column_names(cols, "drop_columns")}
 
 
 @register_op(
@@ -1136,30 +1301,38 @@ UNIT_FAMILIES: dict[str, dict[str, float]] = {
 _UNIT_TO_FAMILY: dict[str, str] = {
     u: fam for fam, units in UNIT_FAMILIES.items() for u in units
 }
-_UNIT_ALIASES = {"litre": "l", "liter": "l", "litres": "l", "liters": "l", "grams": "g", "kilos": "kg"}
-_UNIT_VALUE_RE = re.compile(
-    r"^\s*([+-]?\d+(?:[.,]\d+)?)\s*([A-Za-z]+)\s*$"
-)
+_UNIT_ALIASES = {
+    "litre": "l", "liter": "l", "litres": "l", "liters": "l",
+    "gram": "g", "grams": "g", "gm": "g", "gms": "g",
+    "kilo": "kg", "kilos": "kg", "kgs": "kg", "kilogram": "kg", "kilograms": "kg",
+    "milligram": "mg", "milligrams": "mg",
+    "lbs": "lb", "pound": "lb", "pounds": "lb", "ounce": "oz", "ounces": "oz",
+    "meter": "m", "meters": "m", "metre": "m", "metres": "m",
+    "kilometer": "km", "kilometers": "km", "kilometre": "km", "kilometres": "km",
+    "centimeter": "cm", "centimeters": "cm", "centimetre": "cm", "centimetres": "cm",
+    "millimeter": "mm", "millimeters": "mm", "millimetre": "mm", "millimetres": "mm",
+    "inch": "in", "inches": "in", "foot": "ft", "feet": "ft", "yard": "yd", "yards": "yd",
+    "milliliter": "ml", "milliliters": "ml", "millilitre": "ml", "millilitres": "ml",
+    "gallon": "gal", "gallons": "gal",
+}
 
 
 def parse_unit_scalar(value: Any) -> tuple[float, str] | None:
-    """Parse ``"5kg"`` / ``"5000 g"`` → ``(5.0, "kg")``. Returns ``None`` if not a unit value."""
+    """Parse ``"5kg"`` / ``"5000 g"`` → ``(5.0, "kg")``. Returns ``None`` if not a unit value.
+
+    An ambiguous number (``"1,500 g"`` — 1500 or 1.5?) also returns ``None``, so it
+    is reported as unparseable instead of being silently guessed.
+    """
     if _is_na(value):
         return None
-    if isinstance(value, (int, float, bool)):
+    split = split_number_unit(value)
+    if split is None:
         return None
-    m = _UNIT_VALUE_RE.match(str(value))
-    if not m:
+    number, unit = split
+    unit = _UNIT_ALIASES.get(unit, unit)
+    if unit not in _UNIT_TO_FAMILY:
         return None
-    num_s, unit_s = m.group(1), m.group(2).casefold()
-    unit_s = _UNIT_ALIASES.get(unit_s, unit_s)
-    if unit_s not in _UNIT_TO_FAMILY:
-        return None
-    num_s = num_s.replace(",", ".")
-    try:
-        return float(num_s), unit_s
-    except ValueError:
-        return None
+    return number, unit
 
 
 def _check_unit(to: str) -> str:
@@ -1212,44 +1385,29 @@ def normalize_unit(
     target_family = _UNIT_TO_FAMILY[to]
     target_factor = UNIT_FAMILIES[target_family][to]
 
-    amounts: list[float] = []
-    units: list[Any] = []
-    for v in series.tolist():
+    def cell(v: Any) -> tuple[float, Any]:
+        """(amount in the target unit, source unit) for one cell; pure, so shareable."""
         parsed = parse_unit_scalar(v)
         if parsed is None:
             if isinstance(v, (int, float)) and not isinstance(v, bool) and not _is_na(v):
-                amounts.append(float(v))
-                units.append(to)
-            elif isinstance(v, str) and _is_strict_looking_number(v):
-                try:
-                    amounts.append(float(v.replace(",", ".").strip()))
-                    units.append(to)
-                except ValueError:
-                    amounts.append(np.nan)
-                    units.append(None)
-            else:
-                amounts.append(np.nan)
-                units.append(None)
-            continue
+                return float(v), to
+            if isinstance(v, str) and (bare := parse_plain_number(v.strip())) is not None:
+                return bare, to
+            return np.nan, None
         amount, unit = parsed
         family = _UNIT_TO_FAMILY[unit]
         if family != target_family:
-            amounts.append(np.nan)
-            units.append(unit)
-            continue
-        base = amount * UNIT_FAMILIES[family][unit]
-        amounts.append(base / target_factor)
-        units.append(unit)
+            return np.nan, unit
+        return amount * UNIT_FAMILIES[family][unit] / target_factor, unit
 
-    out = pd.Series(amounts, index=series.index, dtype="float64")
+    pairs = map_pure(series, cell).tolist()
+    amounts = [p[0] for p in pairs]
+    units = [p[1] for p in pairs]
+
+    out = pd.Series(amounts, index=series.index, dtype="float64", name=series.name)
     if emit_unit_column:
         return ColumnOpResult(out, emit={emit_unit_column: pd.Series(units, index=series.index)})
     return out
-
-
-def _is_strict_looking_number(value: str) -> bool:
-    s = value.strip().replace(",", ".")
-    return bool(re.match(r"^[+-]?\d+(\.\d+)?$", s))
 
 
 __all__ = [
@@ -1268,5 +1426,6 @@ __all__ = [
     "CAST_TARGETS",
     "UNIT_FAMILIES",
     "CURRENCY_SYMBOLS",
+    "CURRENCY_WORDS",
     "DEFAULT_NA_TOKENS",
 ]
