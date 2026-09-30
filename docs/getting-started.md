@@ -17,6 +17,7 @@ Optional extras:
 ```bash
 pip install "cleanframe-engine[excel]"     # .xlsx / .xlsm
 pip install "cleanframe-engine[parquet]"   # .parquet (pyarrow)
+pip install "cleanframe-engine[detect]"    # better encoding suggestions (charset-normalizer)
 pip install "cleanframe-engine[llm]"       # Anthropic + OpenAI SDKs
 pip install "cleanframe-engine[all]"       # everything
 ```

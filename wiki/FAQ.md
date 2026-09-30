@@ -102,7 +102,9 @@ memory is bounded by the chunk size, not file size.
 
 Read-time format auto-correction detects the delimiter and encoding by default
 and pins them into the recipe. Pass `--no-correct` (`correct_format=False`) to
-disable; an ambiguous delimiter raises rather than guessing.
+disable; an ambiguous delimiter raises rather than guessing. A Shift-JIS / GBK / Big5 /
+EUC-KR / Cyrillic file is refused with a list of likely encodings — pass `encoding=`
+(`--encoding`). Title rows above the header: pass `header_row=N` (`--header-row N`).
 
 ## Is the HTML report XSS-safe?
 

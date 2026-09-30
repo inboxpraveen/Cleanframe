@@ -40,6 +40,21 @@ mapping. `rename_to` must be a non-empty string.
 Spell every parameter exactly as the table below gives it — the loader accepts no
 near-misses.
 
+## YAML gotchas the loader defends against
+
+CleanFrame reads recipes with YAML 1.1 rules, which have famous traps. What it does about them:
+
+- **Column names.** A plain (unquoted) mapping key is always kept as text: `yes:`, `no:`, `on:`, `null:`, `~:`,
+  `010:`, `0x10:` and `12:30:` name columns `yes`, `no`, `on`, `null`, `~`, `010`, `0x10` and `12:30` — not `True`,
+  `False`, `None`, `8`, `16` or `750`. (Generated recipes quote them anyway.)
+- **Text values.** Values are *not* re-typed for you: `to_na: [no, null]` would hand the op a boolean and `None`, so
+  it is refused at load with a "quote it" hint. Write `to_na: ["no", "null"]`. The same applies to `replace:`
+  `pattern`/`repl` and `parse_number` `decimal`/`thousands` (each must be text/one character).
+- **Everything else fails at load, not at replay:** unknown ops and parameters, duplicate keys, a `version:` that is
+  not an integer (`true` is refused), a ReDoS-prone `replace` pattern, a `repl` that refers to a regex group the
+  pattern does not have, and unknown option keys in `read:`.
+- `ops: strip_whitespace` (a bare name) is a one-op list.
+
 ## Top-level fields
 
 ```yaml
@@ -89,22 +104,23 @@ An op may also appear as a sibling key next to `rename_to:` instead of inside
 The planner emits ops in canonical `OP_ORDER`. When editing by hand, prefer the
 same order so transforms compose safely:
 
-1. `strip_whitespace`
-2. `collapse_whitespace`
-3. `to_na`
-4. `extract_currency`
-5. `remove_symbols`
-6. `normalize_unit`
-7. `parse_number`
-8. `round`
-9. `cast`
-10. `parse_date`
-11. `normalize_email`
-12. `normalize_phone`
-13. `replace`
-14. `normalize_values`
-15. `capitalize` / `title_case` / `lowercase` / `uppercase`
-16. `fill_na` *(never auto-proposed — human only)*
+1. `normalize_unicode`
+2. `strip_whitespace`
+3. `collapse_whitespace`
+4. `to_na`
+5. `extract_currency`
+6. `remove_symbols`
+7. `normalize_unit`
+8. `parse_number`
+9. `round`
+10. `cast`
+11. `parse_date`
+12. `normalize_email`
+13. `normalize_phone`
+14. `replace`
+15. `normalize_values`
+16. `capitalize` / `title_case` / `lowercase` / `uppercase`
+17. `fill_na` *(never auto-proposed — human only)*
 
 An op the planner does not order keeps its insertion position after all ordered
 ones. Ops inside a hand-written `ops:` list run exactly as written.
@@ -116,6 +132,7 @@ ones. Ops inside a hand-written `ops:` list run exactly as written.
 
 | Op | Parameters | Notes |
 |----|------------|-------|
+| `normalize_unicode` | `form` | `NFC` (default), `NFD`, `NFKC` or `NFKD`. Also removes zero-width spaces, word joiners and BOMs and turns a non-breaking space into a plain one. Zero-width *joiners* are kept (emoji sequences, several scripts). `normalize_unicode: NFKC` is the bare form |
 | `to_na` | `tokens`, `case_insensitive` | `tokens` is a string or list; omitted uses the default token list below. `case_insensitive` defaults `true`. A bare list or scalar is the token list: `to_na: ["-", "?"]` |
 | `parse_date` | `formats`, `dayfirst`, `yearfirst`, `output` | `formats` is a **list** of strftime patterns (a bare string is rejected); `allowed` is accepted as an alias. `dayfirst`/`yearfirst` default `false`. `output` defaults `%Y-%m-%d`; `iso`/`date` mean the same; `datetime`/`raw`/`none` keep datetime dtype; anything else is used as a strftime pattern |
 | `parse_number` | `decimal`, `thousands`, `symbols` | Defaults `"."`, `","`, `[]`. Set `decimal: ","` / `thousands: "."` for European formats; `symbols` is a list of substrings to strip first |
@@ -126,7 +143,7 @@ ones. Ops inside a hand-written `ops:` list run exactly as written.
 | `normalize_phone` | `default_country_code` | `country_code` and `region` are accepted as aliases. A bare string is the code: `normalize_phone: "+91"` |
 | `normalize_values` | `map`, `case_insensitive` | A bare mapping **is** the map: `normalize_values: {BLR: Bangalore}`. Use the `map:` key when you also want `case_insensitive: true` |
 | `extract_currency` | `to`, `default` | Emits a new ISO-code column named `to` (default `<col>_currency`) and leaves the source column unchanged. `default` is the code for cells with no symbol. A bare string is `to` |
-| `normalize_unit` | `to`, `emit_unit_column` | `to` is a unit from one family: mass `mg` `g` `kg` `oz` `lb`; length `mm` `cm` `m` `km` `in` `ft` `yd`; volume `ml` `l` `gal`. A bare string is `to`. Cross-family and unparseable cells become NaN; `emit_unit_column` records the original unit |
+| `normalize_unit` | `to`, `emit_unit_column` | `to` is a unit from one family: mass `mg` `g` `kg` `oz` `lb`; length `mm` `cm` `m` `km` `in` `ft` `yd`; volume `ml` `l` `gal` (plural and long spellings such as `lbs`, `pounds`, `kgs`, `inches` are recognised). A bare string is `to`. Cross-family and unparseable cells become NaN; `emit_unit_column` records the original unit |
 | `fill_na` | `value`, `strategy` | `strategy` is one of `mean`, `median`, `mode`, `ffill`, `pad`, `bfill`, `backfill`, `zero`, `empty`; otherwise `value` is a constant. A bare scalar is `value`: `fill_na: 0`. Never auto-proposed |
 
 Default `to_na` tokens (matched case-insensitively after trimming): empty string,
@@ -255,6 +272,7 @@ columns:
 | `columns` | Column subset (`usecols`) — a filter, not a reorder; output keeps file order |
 | `nrows` | Read only the first N data rows |
 | `skiprows` | Skip N leading **data** rows (the header row is kept), or a list of 1-based data-row numbers |
+| `header_row` | 0-based line (CSV) / row (Excel) holding the column names; everything above it is skipped. Recorded together with `blank_lines` (the same number) so a streamed replay skips the same lines |
 | `encoding` | File encoding, pinned by read-time format correction |
 | `sep` | Field delimiter, pinned by read-time format correction |
 | `blank_lines` | Empty lines above the header row, found by the format corrector |
@@ -262,7 +280,7 @@ columns:
 
 Any other key is rejected.
 
-`clean`/`report` record `sheet`/`columns`/`nrows`/`skiprows` and `text` (and,
+`clean`/`report` record `sheet`/`columns`/`nrows`/`skiprows`/`header_row` and `text` (and,
 from format auto-correction, `encoding`/`sep`/`blank_lines`); `apply_recipe`
 replays them. Under `skiprows`/`nrows` the diff `row_id` is relative to the
 loaded slice.
@@ -287,6 +305,13 @@ sheets:
 Load with `load_recipe(path)` (auto-detects the `sheets:` block) or
 `WorkbookRecipe.load(path)`. `Recipe.from_dict` rejects a `sheets:` doc and
 points to `WorkbookRecipe`/`load_recipe`.
+
+## Number-format drift
+
+A column the recipe parses with `parse_number` is checked on replay: if 5% or more of its digit-bearing values no longer
+fit the recipe's `decimal`/`thousands` convention (a European `€1.200,50` against a `.`-decimal recipe), replay stops with a
+`number_format_drift` finding (exit `3`). A smaller share is reported as INFO — a stray `12ab34` is noise, not a new format.
+Values with no digit (`N/A`, blanks) never count.
 
 ## Round-trip contract
 

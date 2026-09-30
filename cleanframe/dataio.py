@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv as _csv
 import os
 import re as _re
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,7 @@ from ._util import (
     sanitize_dataframe_for_csv,
     sanitize_dataframe_for_spreadsheet,
 )
-from .errors import CleanFrameError, OutputError
+from .errors import CleanFrameError, CleanFrameWarning, OutputError
 
 #: Encoding for CSV/TSV. ``utf-8-sig`` accepts a BOM and writes plain UTF-8 when
 #: pandas strips the sig on read; we still pass ``encoding="utf-8"`` on write.
@@ -89,11 +90,56 @@ def _pandas_skiprows(skiprows: int | list[int] | None, blank_lines: int):
     return lines or None
 
 
+def _header_hint(path: Path, encoding: str, sep: str | None, blank_lines: int) -> str:
+    """`` Try header_row=N`` when title rows plausibly sit above the header, else ``""``."""
+    from .readfix import suggest_header_row
+
+    try:
+        with open(path, encoding=encoding, newline="") as fh:
+            lines = [fh.readline().rstrip("\r\n") for _ in range(60)]
+    except (OSError, UnicodeDecodeError, LookupError):
+        return ""
+    at = suggest_header_row(lines, sep or ",")
+    if at is None or at <= blank_lines:
+        return ""
+    return (
+        f" The real header may be on line {at + 1}: pass header_row={at} "
+        f"(CLI --header-row {at}) to skip the {at} line(s) above it."
+    )
+
+
+_DELIMITER_NAMES = {";": "semicolon", "\t": "tab", "|": "pipe", ",": "comma"}
+
+
+def _delimiter_hint(path: Path, encoding: str, sep: str | None, blank_lines: int) -> str:
+    """A hint when the file is consistently split by a delimiter other than ``sep``."""
+    try:
+        with open(path, encoding=encoding, newline="") as fh:
+            for _ in range(blank_lines):
+                fh.readline()
+            lines = [ln for ln in (fh.readline() for _ in range(6)) if ln.strip()]
+    except (OSError, UnicodeDecodeError, LookupError):
+        return ""
+    current = sep or ","
+    for delim in (";", "\t", "|", ","):
+        if delim == current:
+            continue
+        counts = [ln.count(delim) for ln in lines]
+        if counts and counts[0] >= 1 and len(set(counts)) == 1:
+            return (
+                f" The file looks {_DELIMITER_NAMES[delim]}-delimited: pass sep={delim!r} "
+                f"(CLI --sep) - clean() and report() detect the delimiter for you."
+            )
+    return ""
+
+
 def _check_csv_header(path: Path, encoding: str, sep: str | None, blank_lines: int) -> None:
     """Refuse duplicate or blank CSV headers instead of letting pandas rename them.
 
     pandas turns a repeated ``name`` into ``name.1`` and a blank one into
     ``Unnamed: 3``, so the recipe would key lineage off a label the file never had.
+    A title row above the real header is the usual cause, so the error suggests
+    ``header_row=`` when it can find the header.
     """
     try:
         with open(path, encoding=encoding, newline="") as fh:
@@ -106,6 +152,19 @@ def _check_csv_header(path: Path, encoding: str, sep: str | None, blank_lines: i
         return
     fields = next(_csv.reader([line.rstrip("\r\n")], delimiter=sep or ","), None)
     if not fields or len(fields) < 2:
+        hint = _header_hint(path, encoding, sep, blank_lines)
+        if hint:
+            # "The header is on line 2" would be the wrong advice for a file that is simply
+            # split by another delimiter: say that first.
+            delimiter = _delimiter_hint(path, encoding, sep, blank_lines)
+            if delimiter:
+                raise CleanFrameError(
+                    f"{path.name} reads as a single column with sep={sep or ','!r}." + delimiter
+                )
+            raise CleanFrameError(
+                f"The first row of {path.name} has a single field, but the rows below are "
+                f"wider - it looks like a title, not a header.{hint}"
+            )
         return
     names = [f.strip() for f in fields]
     if any(not n for n in names):
@@ -113,6 +172,7 @@ def _check_csv_header(path: Path, encoding: str, sep: str | None, blank_lines: i
             f"{path.name} has an empty column name in its header row "
             f"(position {names.index('') + 1} of {len(names)}). Name every column, or "
             "select the ones you need with columns=."
+            + _header_hint(path, encoding, sep, blank_lines)
         )
     seen: dict[str, int] = {}
     for n in names:
@@ -121,8 +181,182 @@ def _check_csv_header(path: Path, encoding: str, sep: str | None, blank_lines: i
     if dups:
         raise CleanFrameError(
             f"{path.name} has duplicate column name(s) {dups} in its header row. "
-            "CleanFrame needs unique names — rename them in the file, or select a "
-            "subset with columns=."
+            "CleanFrame needs unique names - rename them in the file, or select a "
+            "subset with columns=." + _header_hint(path, encoding, sep, blank_lines)
+        )
+
+
+#: Text-file scans run over at most this many records (bounded, O(1) memory).
+_SCAN_ROWS = 100_000
+_NUL_CHUNK = 1 << 20
+_FOOTER_RE = _re.compile(r"(?:grand\s+total|sub[\s-]?total|total)s?\s*:?", _re.IGNORECASE)
+#: Workbooks above this size skip the (advisory) formula/merged-cell scan.
+_STRUCTURE_SCAN_BYTES = 25 * 1024 * 1024
+
+
+def _refuse_nul_bytes(path: Path, encoding: str) -> None:
+    """pandas' C parser silently truncates a field at a NUL byte (``a<NUL>b`` -> ``a``).
+
+    ``clean`` has always refused such a file; ``read_frame`` now does too, instead of
+    handing back quietly shortened values. UTF-16/32 text legitimately contains NULs.
+    """
+    if encoding.lower().replace("_", "-").startswith(("utf-16", "utf-32", "utf16", "utf32")):
+        return
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(_NUL_CHUNK)
+                if not chunk:
+                    return
+                if b"\x00" in chunk:
+                    break
+    except OSError:
+        return
+    raise CleanFrameError(
+        f"{path.name} contains NUL bytes, which the CSV parser would silently use to "
+        "truncate values. It is either binary or UTF-16/32 text: pass an explicit "
+        "encoding= (e.g. 'utf-16') if it is text, or clean the NULs out of the file."
+    )
+
+
+def _warn_csv_shape(path: Path, encoding: str, sep: str | None, blank_lines: int) -> None:
+    """Warn - never fix - about short (NaN-padded) rows and a trailing totals row."""
+    header_len = 0
+    header_no = 0
+    short: list[int] = []
+    n_short = 0
+    last: list[str] | None = None
+    reached_eof = True
+    try:
+        with open(path, encoding=encoding, newline="") as fh:
+            reader = _csv.reader(fh, delimiter=sep or ",")
+            seen_header = False
+            skipped = 0
+            for rec_no, row in enumerate(reader, start=1):
+                if not seen_header:
+                    if skipped < blank_lines:  # physical lines above the header
+                        skipped += 1
+                        continue
+                    header_len, seen_header, header_no = len(row), True, rec_no
+                    continue
+                if rec_no - header_no > _SCAN_ROWS:
+                    reached_eof = False
+                    break
+                if not row:
+                    continue
+                last = row
+                if len(row) < header_len:
+                    n_short += 1
+                    if len(short) < 3:
+                        short.append(rec_no)
+    except (OSError, UnicodeDecodeError, LookupError, _csv.Error):
+        return
+    if n_short:
+        rows = ", ".join(str(n) for n in short) + (", ..." if n_short > len(short) else "")
+        warnings.warn(
+            f"CleanFrame: {n_short} row(s) in {path.name} have fewer fields than the "
+            f"{header_len}-column header (record {rows}); the missing cells were read as "
+            "empty. Check for truncated or unquoted rows.",
+            CleanFrameWarning,
+            stacklevel=4,
+        )
+    if reached_eof and last and _FOOTER_RE.fullmatch(last[0].strip()):
+        warnings.warn(
+            f"CleanFrame: the last row of {path.name} starts with {last[0].strip()!r} - it "
+            "looks like a footer/total row, which would be cleaned as data. Drop it with "
+            "nrows= or remove it from the file if it is not a real record.",
+            CleanFrameWarning,
+            stacklevel=4,
+        )
+
+
+def _warn_excel_structure(path: Path, sheet_names: list[str]) -> None:
+    """Warn about cells pandas cannot see: uncached formulas and merged ranges.
+
+    pandas reads cached formula results, so a formula that was never calculated (a
+    file written by a script, never opened in Excel) reads as empty; a merged range
+    keeps its value only in the top-left cell. Both look like ordinary missing data.
+    Advisory only: any failure here is swallowed.
+    """
+    if path.suffix.lower() not in (".xlsx", ".xlsm"):
+        return
+    try:
+        if path.stat().st_size > _STRUCTURE_SCAN_BYTES:
+            return
+        import openpyxl
+
+        formulas = openpyxl.load_workbook(path, data_only=False)
+        cached = openpyxl.load_workbook(path, data_only=True)
+    except Exception:  # noqa: BLE001 - advisory
+        return
+    notes: list[str] = []
+    try:
+        for name in sheet_names:
+            if name not in formulas.sheetnames:
+                continue
+            ws, wc = formulas[name], cached[name]
+            merged = len(ws.merged_cells.ranges)
+            uncached = 0
+            for row in ws.iter_rows():
+                for cell in row:
+                    if cell.data_type == "f" and wc[cell.coordinate].value is None:
+                        uncached += 1
+            if uncached:
+                notes.append(
+                    f"sheet {name!r}: {uncached} formula cell(s) have no cached value "
+                    "(the workbook was never calculated) and read as empty"
+                )
+            if merged:
+                notes.append(
+                    f"sheet {name!r}: {merged} merged range(s) - only the top-left cell "
+                    "of each keeps its value, the rest read as empty"
+                )
+    except Exception:  # noqa: BLE001 - advisory
+        return
+    finally:
+        formulas.close()
+        cached.close()
+    if notes:
+        warnings.warn(
+            f"CleanFrame: {path.name} has cells pandas cannot read as data - "
+            + "; ".join(notes)
+            + ".",
+            CleanFrameWarning,
+            stacklevel=4,
+        )
+
+
+def _warn_excel_title_rows(path: Path, sheet, df: pd.DataFrame) -> None:
+    """Warn when an Excel sheet's 'header' is a title row (mostly ``Unnamed:`` columns)."""
+    cols = [str(c) for c in df.columns]
+    if len(cols) < 2 or sum(c.startswith("Unnamed:") for c in cols) * 2 < len(cols):
+        return
+    try:
+        from .readfix import suggest_header_row_from_counts
+
+        raw = pd.read_excel(path, sheet_name=sheet, header=None, nrows=40)
+        at = suggest_header_row_from_counts([int(n) for n in raw.notna().sum(axis=1)])
+    except Exception:  # noqa: BLE001 - advisory
+        return
+    if at:
+        warnings.warn(
+            f"CleanFrame: most column names in {path.name} are blank ('Unnamed: N') - a "
+            f"title row is probably above the real header. Try header_row={at} "
+            f"(CLI --header-row {at}).",
+            CleanFrameWarning,
+            stacklevel=4,
+        )
+
+
+def _refuse_empty_slice(path: Path, df: pd.DataFrame, nrows, skiprows) -> None:
+    """``skiprows`` past the end of the data used to succeed with an empty frame."""
+    if len(df) or nrows == 0 or skiprows is None or isinstance(skiprows, bool):
+        return
+    skipped = skiprows if isinstance(skiprows, int) else len(skiprows)
+    if skipped > 0:
+        raise CleanFrameError(
+            f"skiprows={skiprows!r} leaves no data rows in {path.name} - it skips past the "
+            "end of the data. Lower it, or check that the right file is being read."
         )
 
 
@@ -239,6 +473,7 @@ def read_frame(
     columns: list[str] | None = None,
     nrows: int | None = None,
     skiprows: int | list[int] | None = None,
+    header_row: int | None = None,
     blank_lines: int = 0,
     text: bool = False,
     **kwargs,
@@ -258,6 +493,9 @@ def read_frame(
         rows*, never file lines: an int drops that many leading records and keeps the
         header; a list names 1-based data rows. Under ``skiprows``/``nrows`` the diff's
         ``row_id`` is relative to the loaded slice, not the physical file line.
+    header_row:
+        0-based physical line (CSV) or row (Excel) holding the column names, for a
+        file with title rows above the header. Everything above it is skipped.
     text:
         Read every field as a string (CSV/Excel). Pandas otherwise infers types while
         reading, which drops leading zeros, turns ``NA``/``None`` text into NaN and
@@ -267,6 +505,26 @@ def read_frame(
     Any failure pandas/pyarrow would surface as a raw traceback is re-raised as a
     :class:`~cleanframe.errors.CleanFrameError` with an actionable hint.
     """
+    df = _read_frame(
+        path, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows,
+        header_row=header_row, blank_lines=blank_lines, text=text, **kwargs,
+    )
+    _refuse_empty_slice(Path(path), df, nrows, skiprows)
+    return df
+
+
+def _read_frame(
+    path: str | Path,
+    *,
+    sheet: str | int | None = None,
+    columns: list[str] | None = None,
+    nrows: int | None = None,
+    skiprows: int | list[int] | None = None,
+    header_row: int | None = None,
+    blank_lines: int = 0,
+    text: bool = False,
+    **kwargs,
+) -> pd.DataFrame:
     path = Path(path)
     if not path.exists():
         raise CleanFrameError(f"Input file not found: {path}")
@@ -276,6 +534,12 @@ def read_frame(
         raise CleanFrameError(f"Input file is empty (no columns to parse): {path}")
     suffix = path.suffix.lower()
     is_excel = suffix in _EXCEL_SUFFIXES
+    if header_row is not None:
+        if isinstance(header_row, bool) or not isinstance(header_row, int) or header_row < 0:
+            raise CleanFrameError(f"header_row must be 0 or more, got {header_row!r}.")
+        if suffix in _TYPED_SUFFIXES:
+            raise CleanFrameError("header_row= applies to CSV and Excel files only.")
+        blank_lines = header_row  # rows above the header are skipped, like blank lines
     if sheet is not None and not is_excel:
         raise CleanFrameError(f"sheet= is only valid for Excel files, not {suffix or 'this file'}.")
     if not is_excel and suffix not in _CSV_SUFFIXES and suffix not in _TYPED_SUFFIXES:
@@ -319,8 +583,13 @@ def read_frame(
             if text:
                 for key, value in _text_kwargs().items():
                     xl_kwargs.setdefault(key, value)
+            xl_skiprows = _pandas_skiprows(skiprows, blank_lines)
             if columns is not None:
-                available = list(pd.read_excel(path, sheet_name=sheet, nrows=0).columns)
+                head_skip = _pandas_skiprows(None, blank_lines)
+                head_kw = {"skiprows": head_skip} if head_skip is not None else {}
+                available = list(
+                    pd.read_excel(path, sheet_name=sheet, nrows=0, **head_kw).columns
+                )
                 missing = [c for c in columns if c not in available]
                 if missing:
                     raise CleanFrameError(
@@ -330,12 +599,16 @@ def read_frame(
                 xl_kwargs["usecols"] = list(columns)
             if nrows is not None:
                 xl_kwargs["nrows"] = nrows
-            xl_skiprows = _pandas_skiprows(skiprows, blank_lines)
             if xl_skiprows is not None:
                 xl_kwargs["skiprows"] = xl_skiprows
             df = pd.read_excel(path, sheet_name=sheet, **xl_kwargs)
             if isinstance(df, dict):
                 raise CleanFrameError("sheet must select a single sheet (a name or index).")
+            if header_row is None and nrows is None:
+                _warn_excel_title_rows(path, sheet, df)
+            if nrows is None:
+                names = excel_sheet_names(path)
+                _warn_excel_structure(path, [names[sheet] if isinstance(sheet, int) else sheet])
             return df
         if suffix == ".parquet":
             df = pd.read_parquet(path, columns=list(columns) if columns else None, **kwargs)
@@ -359,6 +632,7 @@ def read_frame(
         if text:
             for key, value in _text_kwargs().items():
                 kwargs.setdefault(key, value)
+        _refuse_nul_bytes(path, kwargs["encoding"])
         _check_csv_header(path, kwargs["encoding"], kwargs.get("sep"), blank_lines)
         # index_col=False: a row with one field too many (a stray trailing delimiter)
         # otherwise becomes the index and shifts every column one place left.
@@ -382,7 +656,18 @@ def read_frame(
             if not isinstance(nrows, int) or isinstance(nrows, bool) or nrows < 0:
                 raise CleanFrameError(f"nrows must be 0 or more, got {nrows!r}.")
             kwargs["nrows"] = nrows
-        return pd.read_csv(path, **kwargs)
+        try:
+            df = pd.read_csv(path, **kwargs)
+        except pd.errors.ParserError as exc:
+            hint = _header_hint(path, kwargs["encoding"], kwargs.get("sep"), blank_lines)
+            if not hint:
+                raise
+            raise CleanFrameError(
+                f"Could not parse {path.name}: {type(exc).__name__}: {_detail(exc)}.{hint}"
+            ) from exc
+        if nrows is None:
+            _warn_csv_shape(path, kwargs["encoding"], kwargs.get("sep"), blank_lines)
+        return df
     except ImportError as exc:  # pragma: no cover - optional engine missing
         hint = "Try `pip install cleanframe-engine[excel]` for Excel support."
         if suffix == ".parquet":

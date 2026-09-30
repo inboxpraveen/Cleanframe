@@ -44,7 +44,10 @@ _VALID_ON_FAIL = frozenset({"quarantine", "error", "warn", "drop", "null"})
 #: Keys the ``read:`` section may carry. An unknown key used to reach pandas and
 #: surface as a parse error blaming the data file.
 _READ_KEYS = frozenset(
-    {"sheet", "columns", "nrows", "skiprows", "encoding", "sep", "blank_lines", "text"}
+    {
+        "sheet", "columns", "nrows", "skiprows", "header_row",
+        "encoding", "sep", "blank_lines", "text",
+    }
 )
 
 
@@ -73,7 +76,13 @@ class ValidationRule:
     def from_dict(cls, raw: dict) -> ValidationRule:
         if not isinstance(raw, dict) or "column" not in raw or "check" not in raw:
             raise RecipeError(f"Validation rule must have 'column' and 'check': {raw!r}")
-        on_fail = str(raw.get("on_fail", "quarantine"))
+        raw_on_fail = raw.get("on_fail", "quarantine")
+        if raw_on_fail is None:
+            raise RecipeError(
+                "Validation on_fail is empty. YAML reads an unquoted `null` as no value - "
+                f"write on_fail: \"null\" (or one of {sorted(_VALID_ON_FAIL - {'null'})})."
+            )
+        on_fail = str(raw_on_fail)
         if on_fail not in _VALID_ON_FAIL:
             raise RecipeError(
                 f"Validation on_fail must be one of {sorted(_VALID_ON_FAIL)}, got {on_fail!r}."
@@ -124,6 +133,8 @@ class ColumnRecipe:
 
         # 1) explicit ops list
         raw_ops = raw.get("ops", []) or []
+        if isinstance(raw_ops, (str, dict)):
+            raw_ops = [raw_ops]  # `ops: strip_whitespace` is a one-op list
         if isinstance(raw_ops, (list, tuple)):
             raw_ops = _fuse_scalar_arguments(list(raw_ops))
         for entry in raw_ops:
@@ -154,6 +165,20 @@ class Recipe:
     #: Optional read/selection binding (sheet, columns, nrows, skiprows, and — from
     #: the read-time format corrector — delimiter/encoding). Present => recipe v2.
     read: dict[str, Any] | None = None
+
+    # -- equality ----------------------------------------------------------
+    def __eq__(self, other: object) -> bool:
+        """Two recipes are equal when they *serialise* identically.
+
+        A planner leaves default parameters out and the loader fills them in, so the
+        field-by-field comparison a dataclass gives would call a recipe unequal to
+        its own save/load round trip. The canonical form is what is committed to git.
+        """
+        if not isinstance(other, Recipe):
+            return NotImplemented
+        return self.to_dict() == other.to_dict()
+
+    __hash__ = None  # type: ignore[assignment]  # mutable, like the dataclass default
 
     # -- convenience -----------------------------------------------------
     def column(self, source: str) -> ColumnRecipe | None:
@@ -231,6 +256,8 @@ class Recipe:
             )
 
         raw_version = raw.get("version", RECIPE_VERSION)
+        if isinstance(raw_version, bool):
+            raise RecipeError(f"Recipe 'version' must be an integer, got {raw_version!r}.")
         try:
             version = int(raw_version)
         except (TypeError, ValueError) as exc:
