@@ -10,6 +10,7 @@ quarantine.
 
 from __future__ import annotations
 
+import logging
 import warnings
 from dataclasses import dataclass, field
 
@@ -22,6 +23,8 @@ from .ops import apply_column_op, apply_frame_op
 from .recipe import Recipe
 from .types import Mode
 from .validate import ValidationResult, apply_validations
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,9 +61,10 @@ def execute(
     Memory model
     ------------
     Peak extra allocation is roughly ``input + (op-touched columns snapshot) +
-    (up to max_diff_changes CellChange records)`` — NOT two full frames. Only the
-    columns an op can change are snapshotted for the diff; pass-through columns are
-    read back from the final frame. So a 500 MB frame cleans in well under 2x RAM,
+    (up to max_diff_changes CellChange records)``. Only the columns an op can change
+    are snapshotted for the diff; pass-through columns are read back from the final
+    frame. So the peak is the frame plus the touched columns -
+    roughly 2x when most columns are cleaned (measured), much less when few are,
     and the diff detail is bounded by ``max_diff_changes`` regardless of frame size.
     """
     from ._util import ensure_string_columns
@@ -107,9 +111,18 @@ def execute(
         series = work[src]
         na_before = int(series.isna().sum())
         emitted: dict[str, pd.Series] = {}
+        intentional = 0  # cells a to_na op deliberately marked missing
         for op in col_recipe.ops:
+            na_pre = int(series.isna().sum()) if op.name == "to_na" else 0
             result = apply_column_op(op, series)
             series = result.series
+            if series.name != src:
+                series = series.rename(src)  # an op may return a fresh, unnamed Series
+            if op.name == "to_na":
+                made = int(series.isna().sum()) - na_pre
+                intentional += max(made, 0)
+                if made > 0:
+                    log.append(f"{src}: to_na marked {made} value(s) as missing")
             for name, extra in result.emit.items():
                 if name in emitted:
                     raise ExecutionError(
@@ -118,8 +131,8 @@ def execute(
                 emitted[name] = extra
         work[src] = series
         na_after = int(series.isna().sum())
-        if na_after > na_before:
-            nulled[src] = na_after - na_before
+        if na_after - na_before - intentional > 0:
+            nulled[src] = na_after - na_before - intentional
         for name, extra in emitted.items():
             if name in source_of and source_of[name] is None:
                 # Another op this run already emitted this derived column — two ops
@@ -133,6 +146,14 @@ def execute(
             # the clobber is tracked in the diff — robust to any emit op.
             if name in original_columns and name not in original.columns:
                 original[name] = work[name].copy()
+            if name in work.columns:
+                warnings.warn(
+                    f"CleanFrame: {src!r} emits {name!r}, which overwrites the existing "
+                    f"column {name!r} (recorded in the diff). Give the op a different "
+                    "target name to keep both.",
+                    CleanFrameWarning,
+                    stacklevel=2,
+                )
             work[name] = extra.reindex(work.index)
             if name not in source_of:
                 source_of[name] = None  # brand-new derived column, no "before"
@@ -216,6 +237,12 @@ def execute(
         log.append(msg)
         warnings.warn("CleanFrame: " + msg, CleanFrameWarning, stacklevel=2)
 
+    logger.info(
+        "executed recipe: %d -> %d rows, %d cell(s) changed, %d row(s) quarantined",
+        n_rows_before, len(work), diff.changed_cells, len(outcome.quarantine),
+    )
+    for line in log:
+        logger.info("%s", line)
     return ExecutionResult(
         dataframe=work,
         diff=diff,
