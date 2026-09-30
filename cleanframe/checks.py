@@ -23,6 +23,7 @@ from typing import Any
 
 import pandas as pd
 
+from ._util import map_pure
 from .errors import RecipeError
 from .profile import EMAIL_RE, URL_RE
 
@@ -72,12 +73,12 @@ def _valid_email(series: pd.Series) -> pd.Series:
     def ok(v: Any) -> bool:
         return bool(EMAIL_RE.match(str(v).strip().lower()))
 
-    return series.isna() | series.map(ok)
+    return series.isna() | map_pure(series, ok)
 
 
 @validator("valid_url")
 def _valid_url(series: pd.Series) -> pd.Series:
-    return series.isna() | series.map(lambda v: bool(URL_RE.match(str(v).strip())))
+    return series.isna() | map_pure(series, lambda v: bool(URL_RE.match(str(v).strip())))
 
 
 @validator("valid_phone")
@@ -85,7 +86,7 @@ def _valid_phone(series: pd.Series) -> pd.Series:
     def ok(v: Any) -> bool:
         return 7 <= len(_PHONE_DIGITS.sub("", str(v))) <= 15
 
-    return series.isna() | series.map(ok)
+    return series.isna() | map_pure(series, ok)
 
 
 # ---------------------------------------------------------------------------

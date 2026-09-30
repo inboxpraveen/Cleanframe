@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from ._util import safe_compile_regex
+from ._util import map_pure, safe_compile_regex
 from .checks import (
     _CMP_RE,
     VALIDATOR_REGISTRY,
@@ -100,7 +100,7 @@ def _regex_mask(series: pd.Series, pattern: str) -> pd.Series:
         compiled = safe_compile_regex(pattern)
     except ValueError as exc:
         raise RecipeError(str(exc)) from exc
-    return series.isna() | series.map(lambda v: bool(compiled.search(str(v))))
+    return series.isna() | map_pure(series, lambda v: bool(compiled.search(str(v))))
 
 
 def pass_mask(rule: ValidationRule, series: pd.Series) -> pd.Series:
