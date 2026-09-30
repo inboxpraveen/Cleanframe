@@ -103,6 +103,9 @@ def test_stream_quarantine_sidecar(tmp_path):
         {"version": 1, "validate": [{"column": "email", "check": "valid_email", "on_fail": "quarantine"}]}
     )
     out = tmp_path / "clean.csv"
-    summary = cf.stream_apply(recipe, p, out, chunksize=2, check_drift=False)
+    q = tmp_path / "held.csv"
+    summary = cf.stream_apply(
+        recipe, p, out, chunksize=2, check_drift=False, quarantine_path=q
+    )
     assert summary.rows_out == 3 and summary.rows_quarantined == 2
-    assert summary.quarantine_path is not None and summary.quarantine_path.exists()
+    assert summary.quarantine_path == q and q.exists()

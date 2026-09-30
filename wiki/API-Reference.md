@@ -30,12 +30,13 @@ Profile, plan, and clean.
 | `columns` | `list[str]` \| `None` | `None` | `usecols` filter — keeps file order, not a reorder |
 | `nrows` | `int` \| `None` | `None` | Read only the first N data rows (file input) |
 | `skiprows` | `int` \| `list[int]` \| `None` | `None` | Data rows to drop — an int drops the first N and keeps the header, a list names 1-based data rows. Diff `row_id` is slice-relative |
+| `header_row` | `int` \| `None` | `None` | 0-based line (CSV) / row (Excel) that holds the column names, for files with title rows above the header. Everything above it is skipped; recorded in the recipe `read:` section |
 | `correct_format` | `bool` | `True` | CSV encoding + delimiter auto-detect, pinned to `read:`; ambiguous delimiter raises (CLI `--no-correct`) |
 | `text` | `bool` | `False` | Read every field verbatim — keeps leading zeros, literal `NA`/`None` text, `1e5` exact |
 | `sep` | `str` \| `None` | `None` | Field delimiter, overriding auto-detection |
 | `encoding` | `str` \| `None` | `None` | File encoding, overriding auto-detection |
 
-`sheet` / `columns` / `nrows` / `skiprows` are also accepted by `report`, `apply_recipe`, `suggest_update`, `infer_schema`; `text` / `sep` / `encoding` by `report`, `apply_recipe`, `infer_schema`; `correct_format` by `report` and `infer_schema`. On a DataFrame input `columns` projects while `sheet` / `nrows` / `skiprows` raise (file-only).
+`sheet` / `columns` / `nrows` / `skiprows` / `header_row` are also accepted by `report`, `apply_recipe`, `suggest_update`, `infer_schema`; `text` / `sep` / `encoding` by `report`, `apply_recipe`, `infer_schema`; `correct_format` by `report` and `infer_schema`. On a DataFrame input `columns` projects while `sheet` / `nrows` / `skiprows` / `header_row` raise (file-only).
 
 `llm_exposure="none"` plans with the rules planner and makes no network call, even when `llm=` is set.
 
@@ -89,16 +90,20 @@ Replay without re-planning.
 | `on_drift` | `"error"` | `"error"` \| `"warn"` \| `"ignore"`; anything else raises rather than silently disabling the guard |
 | `mode` | `"review"` | `strict` always raises on drift |
 | `source` | `None` | Label for a DataFrame input |
-| `sheet` / `columns` / `nrows` / `skiprows` | `None` | Override the recipe's recorded `read:` selection |
+| `sheet` / `columns` / `nrows` / `skiprows` / `header_row` | `None` | Override the recipe's recorded `read:` selection |
 | `text` / `sep` / `encoding` | `False` / `None` / `None` | Override the recipe's recorded `read:` format |
 
-The recipe's `read:` binding is re-applied when `data` is a path; explicit call arguments win over it. The returned frame is indexed `0..n-1`.
+The recipe's `read:` binding is re-applied when `data` is a path; explicit call arguments win over it.
+
+The returned frame keeps the surviving rows' positions: rows removed by `dedup` or quarantined by validation leave gaps (e.g. `[0, 1, 3, 4]`), so `result.dataframe.index` is not `0..n-1` after a drop. Call `.reset_index(drop=True)` if you need that. `diff.row_id` and `diff.dropped_rows` refer to these original positions.
+
+Drift also covers **number formats**: if a column the recipe parses with `parse_number` receives values that no longer fit its `decimal`/`thousands` convention (a European `€1.200,50` against a `.`-decimal recipe), replay stops with a `number_format_drift` finding instead of producing a wrong number.
 
 ---
 
-## `cf.suggest_update(data, recipe, out=None, **kwargs) → (Recipe, DriftReport)`
+## `cf.suggest_update(data, recipe, *, out=None, **kwargs) → (Recipe, DriftReport)`
 
-Mechanical drift patches (repoint renamed columns, extend date formats). Also takes `source`, `sheet`, `columns`, `nrows`, `skiprows`; the recipe's recorded `read:` binding is re-applied so a workbook or `;`-separated file is read the way it was planned. `out=` writes the patched recipe.
+Mechanical drift patches (repoint renamed columns, extend date formats). Date formats are learned **only from the values the recipe cannot parse today**, so a value that already parses is never re-read differently; if no known format fits the new values the patch says so instead of guessing. Number-format drift is reported but not auto-patched — set the op's `decimal`/`thousands` yourself. Also takes `source`, `sheet`, `columns`, `nrows`, `skiprows`, `header_row`; the recipe's recorded `read:` binding is re-applied so a workbook or `;`-separated file is read the way it was planned. `out=` writes the patched recipe.
 
 ---
 
@@ -166,8 +171,8 @@ print(summary.render())
 |-----------|---------|-------|
 | `chunksize` | `100_000` | Peak memory ≈ one chunk |
 | `mode` | `"review"` | |
-| `check_drift` / `on_drift` | `True` / `"error"` | Drift checked on a bounded head sample |
-| `quarantine_path` | `None` | Write dropped / quarantined rows |
+| `check_drift` / `on_drift` | `True` / `"error"` | Drift checked over every row (first pass) before any output is written |
+| `quarantine_path` | `None` | Where to write quarantined rows; without it they are counted and warned about, not saved |
 
 `cf.check_streamable(recipe)` is the pre-flight. GLOBAL ops are refused with a named `CleanFrameError`: `dedup`; `fill_na` with `mean`/`median`/`mode`/`ffill`/`bfill`; `cast` to `category`/`datetime`/`date`; `parse_date` without explicit formats; the `unique` validator; and any unknown custom op (default-DENY).
 
@@ -205,14 +210,28 @@ cf.write_frame(df, "out.csv", source="in.csv", overwrite=True)
 @cf.detector("iban", priority=45)
 def detect_iban(series, ctx): ...
 
-@cf.register_op("my_op", scope="column", ...)
+@cf.register_op("my_op", scope="column", streamable=True,
+                codegen=lambda params, col: [f"df[{col!r}] = df[{col!r}].str.strip()"])
 def my_op(series, **params): ...
 
 @cf.validator("valid_iban")
 def _(series): ...
+
+cf.load_plugins(["my_pkg.cleanframe_plugin"])   # import plugin modules (idempotent)
 ```
 
-See [Detectors & ops](Detectors-and-Ops) and [`CONTRIBUTING.md`](https://github.com/inboxpraveen/Cleanframe/blob/main/CONTRIBUTING.md).
+`register_op(..., codegen=, helpers=, streamable=)` are opt-in: an op that declares neither is refused by
+`result.code` and by `stream_apply` rather than silently mishandled. `cf.load_plugins(modules=(), *, discover=True)`
+imports the named modules plus every installed `cleanframe.plugins` entry point and everything in
+`CLEANFRAME_PLUGINS`. See the [plugin guide](Plugins), [Detectors & ops](Detectors-and-Ops) and
+[`CONTRIBUTING.md`](https://github.com/inboxpraveen/Cleanframe/blob/main/CONTRIBUTING.md).
+
+The library logs through the standard `logging` module under the `cleanframe` logger (a `NullHandler` by default):
+
+```python
+import logging
+logging.getLogger("cleanframe").setLevel(logging.INFO)   # or run the CLI with --verbose
+```
 
 ---
 
@@ -259,7 +278,7 @@ The remaining names in `cf.__all__`:
 
 ## Errors
 
-`CleanFrameError` is the base class for every error CleanFrame raises deliberately, so `except cleanframe.CleanFrameError` catches all of them without swallowing unrelated bugs.
+`CleanFrameError` is the base class for every error CleanFrame raises deliberately, so `except cf.CleanFrameError` catches all of them without swallowing unrelated bugs.
 
 | Exception | When |
 |-----------|------|
@@ -280,5 +299,6 @@ Every advisory CleanFrame emits uses the `CleanFrameWarning` category, so caller
 
 ```python
 import warnings
-warnings.simplefilter("ignore", cleanframe.CleanFrameWarning)
+import cleanframe as cf
+warnings.simplefilter("ignore", cf.CleanFrameWarning)
 ```
