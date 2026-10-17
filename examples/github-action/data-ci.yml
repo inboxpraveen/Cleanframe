@@ -1,0 +1,57 @@
+# CleanFrame Data CI - copy this file to .github/workflows/data-ci.yml in YOUR repository.
+#
+# On every pull request that touches data or recipes (and every Monday morning), it
+# replays the committed CleanFrame recipe over the data files and fails the check when
+# a file has drifted from the recipe or a validation fails. The job summary shows a
+# per-file table; the cleaned files are uploaded as an artifact.
+#
+# Adjust the three marked lines (files, recipe, paths) to your repository's layout.
+# Docs: https://github.com/inboxpraveen/Cleanframe/blob/main/docs/github-action.md
+name: Data CI
+
+on:
+  pull_request:
+    paths:                                   # <- adjust: where your data and recipes live
+      - "data/**"
+      - "recipes/**"
+      - ".github/workflows/data-ci.yml"
+  schedule:
+    - cron: "0 6 * * 1"                      # Mondays 06:00 UTC: catch upstream drift early
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    name: replay recipes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Replay committed recipe
+        id: cleanframe
+        uses: inboxpraveen/Cleanframe/action@v0.5.0
+        with:
+          files: |                           # <- adjust: one path or glob per line
+            data/incoming/*.csv
+          recipe: recipes/customer.recipe.yaml  # <- adjust: your committed recipe
+          mode: review                       # strict: also fail on any failing validation
+          on-drift: error                    # warn: report drift without failing
+          out-dir: cleaned
+
+      - name: Upload cleaned data and the run results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cleanframe-${{ github.run_id }}
+          path: |
+            cleaned/
+            ${{ steps.cleanframe.outputs.results-file }}
+          if-no-files-found: ignore
+          retention-days: 14

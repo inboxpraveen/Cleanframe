@@ -1,0 +1,135 @@
+# CleanFrame Data CI - replay committed CleanFrame recipes against data files in CI.
+#
+# Usage (from this repository):   uses: inboxpraveen/Cleanframe/action@v0.5.0
+# Docs: https://github.com/inboxpraveen/Cleanframe/blob/main/docs/github-action.md
+#
+# Security: every input reaches the scripts through an environment variable; no
+# `${{ inputs.* }}` expression is ever interpolated into a `run:` body, so an input
+# (or a file name from a pull request) cannot inject shell code. The logic lives
+# in summary.py, which starts the CleanFrame CLI with an argument list, not a shell.
+name: CleanFrame Data CI
+description: Replay committed CleanFrame recipes on data files in CI; fail on schema drift or validation errors.
+author: Praveen Kumar (inboxpraveen)
+
+branding:
+  icon: filter
+  color: green
+
+inputs:
+  files:
+    description: >-
+      Data files to check: paths or globs (`**` recurses), one per line, or
+      space-separated on a single line. A pattern that matches no file fails the run.
+    required: true
+  recipe:
+    description: Path of the committed recipe YAML to replay.
+    required: true
+  out-dir:
+    description: >-
+      Write cleaned data here as <stem>.clean.csv (.clean.xlsx for Excel inputs).
+      Empty: check only - outputs go to a scratch directory under $RUNNER_TEMP.
+    required: false
+    default: ""
+  mode:
+    description: review, auto or strict (strict fails on any drift or failing validation).
+    required: false
+    default: review
+  on-drift:
+    description: >-
+      error: stop the drifted file and fail. warn: apply it anyway (`--force`) and
+      report the drift without failing. mode strict always stops on drift.
+    required: false
+    default: error
+  fail-on-quarantine:
+    description: Fail a file whose rows were quarantined by a validation (reported as exit 4).
+    required: false
+    default: "false"
+  cleanframe-version:
+    description: >-
+      CleanFrame to install: a version (0.5.0), a PEP 440 specifier (>=0.5,<0.6) or
+      latest. Empty: the CleanFrame matching this action's ref, else latest from PyPI.
+    required: false
+    default: ""
+  python-version:
+    description: Python for the action's isolated environment. Empty uses python3/python from PATH.
+    required: false
+    default: "3.12"
+  extra-packages:
+    description: >-
+      Extra pip requirements installed next to CleanFrame, space- or newline-separated
+      (openpyxl for Excel, pyarrow for Parquet, a plugin package).
+    required: false
+    default: ""
+
+outputs:
+  drift:
+    description: true when any file showed schema drift (stopped, or applied under on-drift warn).
+    value: ${{ steps.replay.outputs.drift }}
+  changed-cells:
+    description: Cells changed by the recipe, summed over every file that was replayed.
+    value: ${{ steps.replay.outputs.changed-cells }}
+  quarantined:
+    description: Rows quarantined by validations, summed over every file.
+    value: ${{ steps.replay.outputs.quarantined }}
+  failed-files:
+    description: Number of files (or unmatched patterns) that failed.
+    value: ${{ steps.replay.outputs.failed-files }}
+  exit-code:
+    description: Worst exit code (0 ok, 1 error, 2 usage, 3 drift, 4 validation, 70 internal).
+    value: ${{ steps.replay.outputs.exit-code }}
+  results-file:
+    description: Path of a JSON file with every file's CleanFrame summary and outcome.
+    value: ${{ steps.replay.outputs.results-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      id: python
+      if: inputs.python-version != ''
+      uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+        # Keep the caller's PATH untouched: CleanFrame goes into its own virtualenv.
+        update-environment: false
+
+    - name: Install CleanFrame
+      id: install
+      shell: bash
+      env:
+        CF_BOOTSTRAP_PYTHON: ${{ steps.python.outputs.python-path }}
+        CF_CLEANFRAME_VERSION: ${{ inputs.cleanframe-version }}
+        CF_EXTRA_PACKAGES: ${{ inputs.extra-packages }}
+      run: |
+        set -euo pipefail
+        py="$CF_BOOTSTRAP_PYTHON"
+        if [ -z "$py" ]; then
+          # python-version is empty: use the first working Python 3.10+ on PATH.
+          for candidate in python3 python; do
+            if command -v "$candidate" >/dev/null 2>&1 &&
+               "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
+              py="$candidate"
+              break
+            fi
+          done
+        fi
+        if [ -z "$py" ]; then
+          echo "::error title=CleanFrame Data CI::No Python 3.10+ found on PATH; set the python-version input."
+          exit 2
+        fi
+        "$py" "$GITHUB_ACTION_PATH/summary.py" install
+
+    - name: Replay recipe
+      id: replay
+      shell: bash
+      env:
+        CF_PYTHON: ${{ steps.install.outputs.python }}
+        CF_FILES: ${{ inputs.files }}
+        CF_RECIPE: ${{ inputs.recipe }}
+        CF_OUT_DIR: ${{ inputs.out-dir }}
+        CF_MODE: ${{ inputs.mode }}
+        CF_ON_DRIFT: ${{ inputs.on-drift }}
+        CF_FAIL_ON_QUARANTINE: ${{ inputs.fail-on-quarantine }}
+      run: |
+        set -euo pipefail
+        "$CF_PYTHON" "$GITHUB_ACTION_PATH/summary.py" run
