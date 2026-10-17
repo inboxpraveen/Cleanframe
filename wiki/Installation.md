@@ -36,12 +36,18 @@ cleanframe --version
 | `excel` | `openpyxl` | `.xlsx` / `.xlsm` |
 | `parquet` | `pyarrow` | `.parquet` |
 | `llm` | `anthropic`, `openai` | LLM-assisted planning |
-| `dev` | pytest, pytest-cov, openpyxl, ruff, mypy | contributing / CI |
-| `all` | excel + parquet + llm | full feature set |
+| `mcp` | `mcp` (2.3+) | The MCP server for AI agents (`cleanframe-mcp`, `cleanframe mcp`) |
+| `detect` | `charset-normalizer` | Wider encoding detection |
+| `dev` | pytest, pytest-cov, hypothesis, openpyxl, ruff, mypy, mcp | contributing / CI |
+| `all` | excel + parquet + llm + detect + mcp | full feature set |
+
+Decision models (`decide=`) need no extra: the System One protocol is implemented with the
+standard library.
 
 ```bash
 pip install "cleanframe-engine[excel,parquet]"
 pip install "cleanframe-engine[llm]"
+pip install "cleanframe-engine[mcp]"
 pip install "cleanframe-engine[all]"
 pip install "cleanframe-engine[dev]"
 ```

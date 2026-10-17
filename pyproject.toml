@@ -11,7 +11,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "CleanFrame contributors" }]
+authors = [{ name = "Praveen Kumar" }]
+maintainers = [{ name = "Praveen Kumar" }]
 keywords = [
     "data-cleaning",
     "pandas",
@@ -20,6 +21,12 @@ keywords = [
     "reproducible",
     "schema-drift",
     "data-validation",
+    "csv",
+    "excel",
+    "llm",
+    "decision-models",
+    "mcp",
+    "ai-agents",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -46,6 +53,8 @@ excel = ["openpyxl>=3.0"]
 parquet = ["pyarrow>=12.0"]
 llm = ["anthropic>=0.30", "openai>=1.0"]
 detect = ["charset-normalizer>=3"]
+# The MCP server for AI agents (cleanframe-mcp). 2.x renamed FastMCP to MCPServer.
+mcp = ["mcp>=2.3,<3"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -54,11 +63,20 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.8",
     "types-PyYAML>=6.0",
+    "mcp>=2.3,<3",
 ]
-all = ["openpyxl>=3.0", "pyarrow>=12.0", "anthropic>=0.30", "openai>=1.0", "charset-normalizer>=3"]
+all = [
+    "openpyxl>=3.0",
+    "pyarrow>=12.0",
+    "anthropic>=0.30",
+    "openai>=1.0",
+    "charset-normalizer>=3",
+    "mcp>=2.3,<3",
+]
 
 [project.scripts]
 cleanframe = "cleanframe.cli:main"
+cleanframe-mcp = "cleanframe.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/inboxpraveen/Cleanframe"
@@ -66,6 +84,8 @@ Repository = "https://github.com/inboxpraveen/Cleanframe"
 Documentation = "https://github.com/inboxpraveen/Cleanframe/wiki"
 Issues = "https://github.com/inboxpraveen/Cleanframe/issues"
 Changelog = "https://github.com/inboxpraveen/Cleanframe/blob/main/CHANGELOG.md"
+Playground = "https://inboxpraveen.github.io/Cleanframe/"
+Funding = "https://github.com/sponsors/inboxpraveen"
 
 [tool.hatch.version]
 path = "cleanframe/_version.py"

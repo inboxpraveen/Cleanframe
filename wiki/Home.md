@@ -20,7 +20,11 @@ AI writes the cleaning recipe once. The recipe runs forever — deterministic, d
 | [Detectors and Ops](Detectors-and-Ops) | Built-ins, how numbers are parsed |
 | [Plugins](Plugins) | Write and ship custom ops/detectors that work in CI, code export and streaming |
 | [LLM Planning](LLM-Planning) | Providers, exposure, budgets |
+| [Decision Models](Decision-Models) | Jev-style typed decisions: aliases, typo checks, null tokens, schema matches |
+| [AI Agents](AI-Agents) | MCP server and Agent Skill for Claude Code, Cursor, Codex |
+| [Benchmark](Benchmark) | CleanBench: how well decision models clean data |
 | [Production Guide](Production-Guide) | Scale, safety, CI pipelines |
+| [GitHub Action](GitHub-Action) | Data CI on pull requests and schedules |
 | [Architecture](Architecture) | Internals and invariants |
 | [FAQ](FAQ) | Common questions |
 
@@ -34,5 +38,8 @@ AI writes the cleaning recipe once. The recipe runs forever — deterministic, d
 
 ```bash
 pip install cleanframe-engine
-cleanframe report examples/messy_customers.csv
+cleanframe demo          # bundled sample data: profile, clean, drift stop, patch
 ```
+
+Or try it in your browser, with nothing installed and no data uploaded:
+[inboxpraveen.github.io/Cleanframe](https://inboxpraveen.github.io/Cleanframe/)

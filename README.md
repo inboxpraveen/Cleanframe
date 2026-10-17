@@ -6,7 +6,12 @@
 
 <p align="center">
   <b>The reproducible data-cleaning engine for Python.</b><br/>
-  AI writes the cleaning recipe once. The recipe runs forever — deterministic, diffable, reviewable.
+  AI decides once. The recipe runs forever — deterministic, diffable, reviewable.
+</p>
+
+<p align="center">
+  <a href="https://inboxpraveen.github.io/Cleanframe/"><b>▶ Try it in your browser</b></a> (nothing to install, your file never leaves the tab)
+  &nbsp;·&nbsp; <code>pip install cleanframe-engine && cleanframe demo</code>
 </p>
 
 <p align="center">
@@ -20,6 +25,8 @@
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python"/>
   <img src="https://img.shields.io/badge/LLM-optional-success" alt="LLM optional"/>
   <a href="https://github.com/inboxpraveen/Cleanframe/wiki"><img src="https://img.shields.io/badge/docs-wiki-informational" alt="Wiki"/></a>
+  <a href="https://inboxpraveen.github.io/Cleanframe/"><img src="https://img.shields.io/badge/playground-in_browser-ff6f00" alt="Playground"/></a>
+  <a href="https://github.com/inboxpraveen/Cleanframe/blob/main/docs/decisions.md"><img src="https://img.shields.io/badge/decision_models-Jev--style-8a2be2" alt="Decision models"/></a>
 </p>
 
 ---
@@ -54,26 +61,31 @@ The plan compiles to deterministic pandas operations. Same input → same output
 
 ## 30-second demo
 
-No API key needed for this:
+No API key, no sample files to download. The demo data ships inside the package:
 
 ```bash
 pip install cleanframe-engine
-cleanframe report examples/messy_customers.csv
+cleanframe demo
 ```
 
-You get an HTML report: detected issues, quality score, column-by-column diagnosis. Then fix it:
+It profiles a messy customer file (HTML report + quality score), cleans it into a recipe, then replays
+that recipe on *next month's* file. That file has a renamed column and a new date format, so the replay
+**stops** and tells you why. Finally the demo drafts the patch that makes it replay cleanly. Every step
+prints the command to run on your own data.
+
+The same thing in Python:
 
 ```python
 import pandas as pd
 import cleanframe as cf
 
-df = pd.read_csv("examples/messy_customers.csv")
+df = pd.read_csv("cleanframe-demo/messy_customers.csv")      # written by `cleanframe demo`
 
 result = cf.clean(
     df,
-    target_schema="examples/customer.schema.yaml",  # or: cf.infer_schema(df)
-    llm="anthropic/claude-sonnet-4-6",              # optional — omit for rules-only
-    mode="review",                                  # review | auto | strict
+    target_schema="cleanframe-demo/customer.schema.yaml",    # or: cf.infer_schema(df)
+    mode="review",                                           # review | auto | strict
+    # decide="typesafe/jev-latest",   # optional decision model for judgment calls (TYPESAFE_API_KEY)
 )
 
 result.diff.show()                # cell-level before/after, git-diff style
@@ -103,6 +115,32 @@ If the new file's schema drifted (a renamed column, a new currency format), Clea
   Run `cleanframe suggest new_customers.csv --recipe <recipe.yaml> --update` to review a patch.
 ```
 
+## Decision models: AI makes the judgment calls, under a 0.9 bar
+
+Some cleaning steps are judgment calls, not parsing. Is `BLR` another name for `Bangalore`? Is `Banglore`
+a typo, or a different place? Does `none` in an *allergies* column mean "missing" or "no allergies"? Which
+column is the schema's `amount_inr`? Rules can't settle these safely. With `decide=`, a **decision model**
+answers each one as a typed question (pick an option, or yes/no) with a probability. That can be
+[Jev](https://typesafe.ai), an open "System One" model, or any LLM through an adapter.
+
+```bash
+cleanframe clean vendor.csv --decide typesafe/jev-latest --llm-exposure sample
+```
+
+- **An answer changes data only at p ≥ 0.9** (`decision_threshold`). Below that it is recorded as a
+  suggestion in the recipe and never executed. A confident "no, these differ" vetoes a typo merge the
+  rules would have made.
+- **Asked once, at planning time.** Accepted answers become ordinary recipe ops (`normalize_values`,
+  `to_na`, `rename_to`), and every answer is logged in `recipe.meta.decisions`. Replay makes zero AI calls.
+- **Privacy follows `llm_exposure`.** Category values are sent only under `sample`, and only for columns
+  whose values repeat. Dates and numbers are never asked: they stay with the deterministic parsers.
+- Backends: `typesafe/…`, `openrouter/typesafe/…`, self-hosted `systemone/…`, offline `rules`, or any
+  `--llm` spec. No SDK is needed.
+
+How good are decision models at this? **[CleanBench](https://github.com/inboxpraveen/Cleanframe/blob/main/bench/README.md)** measures it on hand-labelled messy
+columns full of traps, scoring *safe-apply precision*: of the answers that would change your data, how
+many are right. See [Decision models](https://github.com/inboxpraveen/Cleanframe/blob/main/docs/decisions.md).
+
 ## Bring your own API key (or no key at all)
 
 CleanFrame is LLM-optional and provider-agnostic.
@@ -113,6 +151,7 @@ CleanFrame is LLM-optional and provider-agnostic.
 | **Metadata** | LLM sees column names, dtypes, and *value patterns* (regex sketches) — never raw values | Only metadata |
 | **Sample** | LLM sees a small shuffled sample of *values*. Emails, phones and long strings are redacted; other short values (names, cities) are sent verbatim. Passing `llm_exposure="sample"` is the opt-in — there is no separate approval step | Sample values, per the redaction above |
 | **Replay** | Saved recipes | Never — recipes need no LLM |
+| **Decisions** (`decide=`) | Typed questions to a decision model while planning; same exposure rules | Metadata only by default; distinct category values under `sample` |
 
 - Keys come from environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
   `OPENROUTER_API_KEY`, `GROQ_API_KEY`, …). CleanFrame never stores or logs them, and
@@ -136,7 +175,7 @@ CleanFrame is LLM-optional and provider-agnostic.
 | Column name chaos | `Cust Name`, `customer_name`, `CustomerName` → `customer_name` |
 | Date formats | `12/01/24`, `1 Jan 2024`, `2024-01-01` → ISO dates |
 | Currency & numbers | `₹1,20,000`, `$1,200`, `-$5`, `(1,200)`, `1.234,56`, `1200 INR` → typed floats (+ a currency column); a value whose grouping is invalid or ambiguous becomes a *counted, warned* null, never a guess |
-| Category variants | `Bengaluru` / `bengaluru ` / `BENGALURU` and typos (`Banglore`) → one canonical value; abbreviations such as `BLR` need a seed map or an LLM |
+| Category variants | `Bengaluru` / `bengaluru ` / `BENGALURU` and typos (`Banglore`, one edit away) → one canonical value; look-alikes such as `Austria`/`Australia` stay apart; abbreviations such as `BLR` need a seed map or a [decision model](https://github.com/inboxpraveen/Cleanframe/blob/main/docs/decisions.md) |
 | Emails & phones | validation, normalization, `00`/`+` international prefixes, optional default country code |
 | Duplicates | exact duplicates are dropped (tracked in the diff); fuzzy near-duplicates and key collisions are *reported* with keep/drop proposals for you to act on |
 | Missing values | detected and explained; strategies proposed, never silently applied |
@@ -164,8 +203,43 @@ CleanFrame is built for pipelines, not just demos:
 - **Strict recipes** — unknown ops/params, duplicate keys and bad regexes fail at *load*; plain YAML keys like `yes`, `010` or `12:30` stay column names
 - **Generated code = executor** — exported pandas embeds the executor's own parsers, and property-based tests check they agree
 - **Plugins that travel** — custom ops/detectors load from entry points, `--plugin` or `CLEANFRAME_PLUGINS`, and can opt in to code export and streaming
+- **Gated AI decisions** — a decision model's answer changes data only at p ≥ 0.9, every answer is logged in the recipe, and replay never calls the model
+- **pandas 1.5 → 3.x** — CI runs the minimum pins, pandas 2 and pandas 3
 
 See the [Production Guide](https://github.com/inboxpraveen/Cleanframe/wiki/Production-Guide).
+
+## Data CI on GitHub
+
+Fail a pull request when a data file drifts from its committed recipe:
+
+```yaml
+- uses: actions/checkout@v7
+- uses: inboxpraveen/Cleanframe/action@v0.5.0
+  with:
+    files: data/incoming/*.csv
+    recipe: recipes/customer.recipe.yaml
+```
+
+Every file is replayed, the job summary gets a per-file table, and the check fails on schema drift
+(exit 3) or a failing validation (exit 4). See [GitHub Action](https://github.com/inboxpraveen/Cleanframe/blob/main/docs/github-action.md).
+
+## Use it from your AI agent
+
+Coding agents love to "just fix the CSV" with throwaway pandas that nobody reviews and nothing replays.
+Give them CleanFrame instead, and they write a **recipe**: reviewed in git, replayed deterministically,
+stopped by drift.
+
+```bash
+npx skills add inboxpraveen/Cleanframe          # Agent Skill: Claude Code, Codex, Cursor, …
+pip install "cleanframe-engine[mcp]"            # MCP server: profile, suggest, apply, drift, explain, export
+claude mcp add cleanframe -- cleanframe-mcp
+```
+
+See [AI agents](https://github.com/inboxpraveen/Cleanframe/blob/main/docs/agents.md) for Claude Desktop, Cursor, VS Code and Codex configs.
+Tools: `profile_data`, `suggest_recipe`, `apply_recipe`, `check_drift`, `explain_recipe`, `list_capabilities`,
+`export_code`. There is no LLM inside the server, the input file is never overwritten, and drift stops the replay.
+
+<!-- mcp-name: io.github.inboxpraveen/cleanframe -->
 
 ## The recipe: your durable artifact
 
@@ -212,6 +286,7 @@ not against it.
 | Works with zero LLM / offline | ✅ | ❌ | ✅ | ✅ | ✅ | ⚠️ |
 | Cell-level diff & lineage | ✅ | ❌ | ❌ | ❌ | ⚠️ | ⚠️ |
 | Schema-drift alerts on re-import | ✅ | ❌ | ⚠️ | ❌ | ❌ | ✅ ($6k+/yr) |
+| AI judgment calls gated by probability, frozen for replay | ✅ | ❌ | ❌ | ❌ | ❌ | ⚠️ |
 | Free & open source | ✅ Apache-2.0 | ✅ | ✅ | ✅ | ✅ | ❌ |
 
 Use PandasAI to *explore*. Use pandera/GX to *guard*. Use **CleanFrame to fix — repeatably.**
@@ -222,10 +297,11 @@ Use PandasAI to *explore*. Use pandera/GX to *guard*. Use **CleanFrame to fix �
 CSV / Excel / DataFrame
    │
    ▼
-Profiler ─→ Issue Detectors ─→ Planner ──────────→ Recipe (YAML)
-             (deterministic)    (rules, or            │
-                                LLM-assisted)         ▼
-                                              Executor (pure pandas)
+Profiler ─→ Issue Detectors ─→ [Decisions] ─→ Planner ──────────→ Recipe (YAML)
+             (deterministic)    (optional:      (rules, or            │
+                                 typed Qs to     LLM-assisted)        ▼
+                                 Jev / an LLM,                Executor (pure pandas)
+                                 gated p ≥ 0.9)
                                                       │
                                                       ▼
                                         Validator · Cell-diff · HTML report
@@ -253,7 +329,9 @@ pip install cleanframe-engine
 pip install "cleanframe-engine[excel]"      # Excel
 pip install "cleanframe-engine[parquet]"    # Parquet
 pip install "cleanframe-engine[llm]"        # Anthropic + OpenAI SDKs
+pip install "cleanframe-engine[mcp]"        # MCP server for AI agents
 pip install "cleanframe-engine[all]"
+# decision models (decide=) need no extra: the System One protocol uses the standard library
 
 # straight from git
 pip install "cleanframe-engine @ git+https://github.com/inboxpraveen/Cleanframe"
@@ -275,7 +353,10 @@ Python 3.10+. The distribution is [`cleanframe-engine`](https://pypi.org/project
 - [x] Read-time format auto-correction (encoding + delimiter)
 - [x] Plugin discovery; custom ops that export and stream
 - [x] `--json` run summaries, library logging, property-based invariant tests
-- [ ] `MessyData-100` public benchmark + leaderboard
+- [x] Decision models (`decide=`): typed, probability-gated judgment calls frozen into recipes
+- [x] CleanBench: a public benchmark and leaderboard for data-cleaning decisions
+- [x] MCP server + Agent Skill; GitHub Action for data CI; in-browser playground; `cleanframe demo`
+- [ ] Decision questions for more judgment calls (unit families, near-duplicate rows), with per-question calibration from CleanBench
 - [ ] pandera / GX / dbt exporters
 - [ ] Polars backend
 - [ ] Recipe registry for teams
@@ -286,7 +367,17 @@ The detector plugin system exists so the community owns the long tail of messy-d
 
 ## Sponsoring
 
-CleanFrame is free, Apache-2.0, and will stay that way for individuals — no feature is paywalled for a person with a laptop and a messy CSV. If it saves your team recurring hours, [sponsorship](https://github.com/sponsors/inboxpraveen) funds detector coverage, the benchmark, and long-term maintenance.
+CleanFrame is free, Apache-2.0, and will stay that way. No feature is paywalled for a person with a laptop
+and a messy CSV. If it saves your team recurring hours, [sponsorship](https://github.com/sponsors/inboxpraveen)
+funds detector coverage, CleanBench runs on new models, and fast fixes for anything that costs you data.
+
+| Tier | What it funds, and what you get |
+|---|---|
+| **Supporter** ($5/mo) | Your name in the release notes |
+| **Cleaner** ($25/mo) | Your detector request jumps the queue |
+| **Team** ($100/mo) | Logo here, priority bug triage, a vote on the roadmap |
+| **Production** ($500/mo) | A quarterly recipe/pipeline review call and private CleanBench runs on your anonymised data |
+| **One-time** | A regional detector pack (India GST/PAN/lakh–crore, EU IBAN/VAT, …) built in the open, credited to you |
 
 ---
 
