@@ -1,0 +1,16 @@
+6ae01d9366a23c214ef73dc6032e80e59bde9b6f754dc010c10f230a0a08f8cc  heldout.yaml
+
+# CleanBench held-out split: 19 scenarios, 89 questions (oracle pass), same format,
+# families and labelling rules as public.yaml. The file itself is never published,
+# so it cannot leak into training data; only this hash is committed.
+#
+# What is hashed: the UTF-8 file with line endings normalised to LF.
+#   python -m bench.cleanbench hash heldout.yaml          (any OS)
+#   tr -d '\r' < heldout.yaml | sha256sum                 (POSIX)
+#
+# How it is used: a maintainer who holds the file runs a submitted system on it,
+#   python -m bench.cleanbench run --system SPEC --split /private/heldout.yaml \
+#       --out bench/results/heldout/<system>.json
+# and commits only the results JSON (no per-question log is written for a
+# non-public split). The leaderboard lists results whose dataset sha256 equals the
+# hash above in its held-out table, so anyone can check which file was used.

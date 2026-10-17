@@ -1,0 +1,872 @@
+# CleanBench public split.
+#
+# Every scenario is a small messy table. CleanFrame's real pipeline decides which
+# questions to ask about it; the gold below answers any of them:
+#
+#   same:          groups of spellings that name one thing; a spelling in no group is
+#                  its own, distinct value.
+#   placeholders:  tokens that mean "missing" in this column; every other value is data.
+#   gold:          (schema scenarios) which source column holds each target, or null.
+#   expect:        the questions the scenario is written to produce (checked by
+#                  `python -m bench.cleanbench validate`): merge / nulls / schema list
+#                  their subjects, alias is a count. A kind that is left out must not occur.
+#
+# Labelling rules (see bench/README.md#how-the-gold-is-written):
+#   * Two spellings are the same only if a careful human who knows the domain would
+#     merge them without asking anyone. Look-alikes, opposites, related-but-different
+#     (debit/credit, hypo/hyper, Austria/Australia) are different.
+#   * A token is a placeholder when it is not a value of the column's domain (a "-"
+#     where a middle name goes). It is data when it is one of the answers the column
+#     records ("None" for allergies, "-" for a DNA strand, "NA" for Namibia).
+#   * All names, codes and records are invented; no real personal data.
+
+version: 1
+split: public
+scenarios:
+
+# ============================================================== category_alias
+- id: alias-in-delivery-cities
+  family: category_alias
+  domain: logistics (India)
+  difficulty: easy
+  rationale: >-
+    Indian cities under their old names, new names and airport codes. Bengaluru and
+    BLR are Bangalore, Bombay is Mumbai, Madras is Chennai; Delhi stands alone.
+  column: delivery_city
+  values: {Bangalore: 9, Mumbai: 8, Delhi: 6, Chennai: 5, Bengaluru: 3, BLR: 2, Bombay: 2, Madras: 1}
+  same: [[Bangalore, Bengaluru, BLR], [Mumbai, Bombay], [Chennai, Madras]]
+  expect: {alias: 7}
+
+- id: alias-us-ship-states
+  family: category_alias
+  domain: e-commerce (US)
+  difficulty: standard
+  rationale: >-
+    A US ship-to state column mixing names, USPS codes and old abbreviations. CA and
+    Calif. are California, TX is Texas, WA is Washington state. DC (District of
+    Columbia) is not Washington state, and Kansas and Arkansas are different states.
+  column: ship_state
+  values: {California: 10, Texas: 8, Washington: 5, CA: 4, TX: 3, Kansas: 3, Arkansas: 3, Calif.: 2, WA: 2, DC: 2}
+  same: [[California, CA, Calif.], [Texas, TX], [Washington, WA]]
+  expect: {alias: 9}
+
+- id: alias-north-america-country-codes
+  family: category_alias
+  domain: CRM (North America)
+  difficulty: hard
+  rationale: >-
+    A country column with ISO 3166 alpha-2 codes next to US and MX, so CA is Canada
+    here, not California. USA/US are the United States, MX and México are Mexico.
+  column: country
+  values: {United States: 10, Canada: 7, Mexico: 5, USA: 4, US: 3, CA: 2, MX: 2, México: 1}
+  same: [[United States, USA, US], [Canada, CA], [Mexico, MX, México]]
+  expect: {alias: 7}
+
+- id: alias-eu-cities-endonyms
+  family: category_alias
+  domain: logistics (EU)
+  difficulty: standard
+  rationale: >-
+    European cities in English and in their own language: München is Munich, Köln is
+    Cologne, Wien is Vienna, Lisboa is Lisbon. Warsaw has no second spelling here.
+  column: city
+  values: {Munich: 8, Cologne: 6, Vienna: 5, Lisbon: 4, Warsaw: 4, München: 3, Köln: 2, Wien: 2, Lisboa: 2}
+  same: [[Munich, München], [Cologne, Köln], [Vienna, Wien], [Lisbon, Lisboa]]
+  expect: {alias: 8}
+
+- id: alias-country-lookalikes
+  family: category_alias
+  domain: trade (global)
+  difficulty: hard
+  rationale: >-
+    Pairs of countries whose names differ by a few letters - Austria/Australia,
+    Slovakia/Slovenia, Niger/Nigeria, Iran/Iraq - are different countries. Holland is
+    the everyday name of the Netherlands.
+  column: destination_country
+  values: {Australia: 7, Nigeria: 7, Slovakia: 6, Slovenia: 5, Netherlands: 5, Austria: 4, Iraq: 4, Niger: 3, Iran: 3, Holland: 2}
+  same: [[Netherlands, Holland]]
+  expect: {alias: 9}
+
+- id: alias-hr-departments
+  family: category_alias
+  domain: HR
+  difficulty: standard
+  rationale: >-
+    Department names and their standard abbreviations: HR, R&D, IT and Ops. Sales,
+    Engineering and Finance have no second name here.
+  column: department
+  values: {Engineering: 10, Sales: 8, Human Resources: 5, Research and Development: 4, IT: 4, Operations: 4, HR: 3, R&D: 2, Information Technology: 2, Ops: 1}
+  same: [[Human Resources, HR], [Research and Development, R&D], [IT, Information Technology], [Operations, Ops]]
+  expect: {alias: 9}
+
+- id: alias-insurance-negation
+  family: category_alias
+  domain: healthcare (US)
+  difficulty: hard
+  rationale: >-
+    Negations are different categories. "Not insured" says the same as "Uninsured",
+    but Underinsured (covered, but not enough) is neither insured nor uninsured.
+  column: insurance_status
+  values: {Insured: 10, Uninsured: 6, Underinsured: 3, Not insured: 2}
+  same: [[Uninsured, Not insured]]
+  expect: {alias: 3}
+
+- id: alias-smoking-status
+  family: category_alias
+  domain: healthcare
+  difficulty: standard
+  rationale: >-
+    Ex-smoker and Former smoker are one status, Smoker and Current smoker another;
+    a non-smoker is neither.
+  column: smoking_status
+  values: {Non-smoker: 10, Smoker: 6, Ex-smoker: 3, Former smoker: 2, Current smoker: 2}
+  same: [[Ex-smoker, Former smoker], [Smoker, Current smoker]]
+  expect: {alias: 4}
+
+- id: alias-in-payment-methods
+  family: category_alias
+  domain: e-commerce (India)
+  difficulty: easy
+  rationale: >-
+    CC is a credit card and COD is cash on delivery. A debit card is not a credit card.
+    "NetBanking" differs from "Net Banking" only by a space, which the rules merge on
+    their own.
+  column: payment_method
+  values: {UPI: 12, Credit Card: 8, Cash on Delivery: 6, Debit Card: 4, Net Banking: 3, COD: 3, CC: 2, NetBanking: 1}
+  same: [[Credit Card, CC], [Cash on Delivery, COD], [Net Banking, NetBanking]]
+  expect: {alias: 6}
+
+- id: alias-gender-codes
+  family: category_alias
+  domain: HR
+  difficulty: easy
+  rationale: >-
+    F and M are Female and Male. Non-binary and "Prefer not to say" are answers of
+    their own, not other names for either.
+  column: gender
+  values: {Female: 9, Male: 8, F: 3, M: 3, Non-binary: 2, Prefer not to say: 2}
+  same: [[Female, F], [Male, M]]
+  expect: {alias: 5}
+
+- id: alias-de-gender-mwd
+  family: category_alias
+  domain: HR (Germany)
+  difficulty: hard
+  rationale: >-
+    A German form's Geschlecht field: m/w/d abbreviate männlich, weiblich and divers
+    (the legal third option). Each letter belongs to its own word.
+  column: geschlecht
+  values: {weiblich: 8, männlich: 7, w: 3, m: 2, divers: 2, d: 1}
+  same: [[weiblich, w], [männlich, m], [divers, d]]
+  expect: {alias: 5}
+
+- id: alias-ledger-currencies
+  family: category_alias
+  domain: finance (Indian exporter)
+  difficulty: standard
+  rationale: >-
+    An Indian exporter's ledger. Rs and ₹ are rupees (INR), US$ is USD, € is EUR and
+    £ is GBP. The bare symbols are only offered as options; CleanFrame never asks about
+    a value made only of a symbol.
+  column: currency
+  values: {INR: 10, USD: 8, EUR: 5, GBP: 3, Rs: 3, US$: 2, €: 2, ₹: 2, £: 1}
+  same: [[INR, Rs, ₹], [USD, US$], [EUR, €], [GBP, £]]
+  expect: {alias: 5}
+
+- id: alias-product-categories
+  family: category_alias
+  domain: e-commerce (India)
+  difficulty: hard
+  rationale: >-
+    "Home and Kitchen" is "Home & Kitchen" and "Mobile Phones" is the "Mobiles"
+    category. Electrical goods (wiring, switches) are not Electronics, and Mobile
+    Accessories are not phones.
+  column: category
+  values: {Electronics: 9, Home & Kitchen: 6, Mobiles: 5, Electrical: 4, Mobile Accessories: 3, Home and Kitchen: 2, Mobile Phones: 2}
+  same: [[Home & Kitchen, Home and Kitchen], [Mobiles, Mobile Phones]]
+  expect: {alias: 6}
+
+- id: alias-in-state-codes
+  family: category_alias
+  domain: tax (India GST)
+  difficulty: standard
+  rationale: >-
+    Indian states and their two-letter codes. AP is Andhra Pradesh; Arunachal Pradesh
+    (AR) is a different state.
+  column: state
+  values: {Karnataka: 8, Maharashtra: 7, Tamil Nadu: 6, Andhra Pradesh: 5, KA: 3, MH: 2, TN: 2, AP: 2, Arunachal Pradesh: 2}
+  same: [[Karnataka, KA], [Maharashtra, MH], [Tamil Nadu, TN], [Andhra Pradesh, AP]]
+  expect: {alias: 8}
+
+- id: alias-latam-cities
+  family: category_alias
+  domain: logistics (Latin America)
+  difficulty: standard
+  rationale: >-
+    CDMX and Mexico City are Ciudad de México; in a list of Brazilian and Latin
+    American cities "Rio" is Rio de Janeiro. Bogota without its accent is a typo the
+    rules fold into Bogotá.
+  column: ciudad
+  values: {São Paulo: 7, Ciudad de México: 6, Rio de Janeiro: 5, Bogotá: 4, Buenos Aires: 4, CDMX: 3, Mexico City: 2, Rio: 2, Bogota: 1}
+  same: [[Ciudad de México, CDMX, Mexico City], [Rio de Janeiro, Rio], [Bogotá, Bogota]]
+  expect: {merge: [Bogota -> Bogotá], alias: 7}
+
+- id: alias-devanagari-cities
+  family: category_alias
+  domain: logistics (India)
+  difficulty: standard
+  rationale: >-
+    The same cities in Latin and Devanagari script: मुंबई is Mumbai, दिल्ली is Delhi,
+    पुणे is Pune. Different cities in the same script are still different cities.
+  column: city
+  values: {Mumbai: 8, Delhi: 7, Pune: 5, Nagpur: 3, मुंबई: 3, दिल्ली: 2, पुणे: 2}
+  same: [[Mumbai, मुंबई], [Delhi, दिल्ली], [Pune, पुणे]]
+  expect: {alias: 6}
+
+# ============================================================== category_merge
+- id: merge-hospital-departments-uk-us
+  family: category_merge
+  domain: healthcare
+  difficulty: easy
+  rationale: >-
+    British spellings of hospital departments (Paediatrics, Orthopaedics, Haematology)
+    are the same departments as the American ones.
+  column: department
+  values: {Pediatrics: 10, Orthopedics: 9, Cardiology: 8, Neurology: 6, Hematology: 5, Paediatrics: 2, Orthopaedics: 2, Haematology: 1}
+  same: [[Pediatrics, Paediatrics], [Orthopedics, Orthopaedics], [Hematology, Haematology]]
+  expect:
+    merge: [Haematology -> Hematology, Orthopaedics -> Orthopedics, Paediatrics -> Pediatrics]
+    alias: 4
+
+- id: merge-diagnoses-hypo-hyper
+  family: category_merge
+  domain: healthcare
+  difficulty: hard
+  rationale: >-
+    Hypotension (low blood pressure) and Hypertension (high) are opposite conditions,
+    as are Hyperthyroidism and Hypothyroidism, though each pair is two letters apart.
+    "Hypertenstion" is a typo of Hypertension.
+  column: diagnosis
+  values: {Hypertension: 12, Hypothyroidism: 9, Asthma: 6, Migraine: 5, Hyperthyroidism: 3, Hypotension: 3, Hypertenstion: 1}
+  same: [[Hypertension, Hypertenstion]]
+  expect:
+    merge: [Hypertenstion -> Hypertension]
+    alias: 5
+
+- id: merge-lab-electrolytes
+  family: category_merge
+  domain: healthcare (lab results)
+  difficulty: hard
+  rationale: >-
+    Hyperkalemia/Hypokalemia and Hypernatremia/Hyponatremia are opposite lab findings.
+    Hypokalaemia is the British spelling of Hypokalemia.
+  column: lab_finding
+  values: {Hypokalemia: 9, Hyponatremia: 8, Anemia: 6, Hyperkalemia: 3, Hypernatremia: 2, Hypokalaemia: 1}
+  same: [[Hypokalemia, Hypokalaemia]]
+  expect:
+    merge: [Hypokalaemia -> Hypokalemia]
+    alias: 4
+
+- id: merge-pharmacy-lasa
+  family: category_merge
+  domain: pharmacy
+  difficulty: hard
+  rationale: >-
+    Look-alike drug names that are different drugs: prednisolone is not prednisone,
+    cycloserine (a TB antibiotic) is not cyclosporine (an immunosuppressant).
+    Metfromin and Amoxicilin are typos.
+  column: drug_name
+  values: {Prednisone: 10, Metformin: 9, Cyclosporine: 8, Amoxicillin: 7, Prednisolone: 3, Cycloserine: 2, Metfromin: 1, Amoxicilin: 1}
+  same: [[Metformin, Metfromin], [Amoxicillin, Amoxicilin]]
+  expect:
+    merge: [Amoxicilin -> Amoxicillin, Metfromin -> Metformin]
+    alias: 5
+
+- id: merge-food-additives
+  family: category_merge
+  domain: food manufacturing
+  difficulty: hard
+  rationale: >-
+    Sodium nitrate (E251) and sodium nitrite (E250) are different additives. "Potasium
+    sorbate" is a typo of potassium sorbate.
+  column: additive
+  values: {Sodium nitrite: 9, Sodium benzoate: 8, Potassium sorbate: 7, Sodium nitrate: 3, Potasium sorbate: 1}
+  same: [[Potassium sorbate, Potasium sorbate]]
+  expect:
+    merge: [Potasium sorbate -> Potassium sorbate, Sodium nitrate -> Sodium nitrite]
+    alias: 3
+
+- id: merge-order-status-typos
+  family: category_merge
+  domain: e-commerce
+  difficulty: easy
+  rationale: >-
+    Canceled is the US spelling of Cancelled; Delievered and Shiped are typos.
+  column: order_status
+  values: {Delivered: 12, Shipped: 9, Pending: 7, Cancelled: 6, Returned: 4, Canceled: 2, Delievered: 1, Shiped: 1}
+  same: [[Delivered, Delievered], [Shipped, Shiped], [Cancelled, Canceled]]
+  expect:
+    merge: [Canceled -> Cancelled, Delievered -> Delivered, Shiped -> Shipped]
+    alias: 4
+
+- id: merge-gst-supply-type
+  family: category_merge
+  domain: tax (India GST)
+  difficulty: hard
+  rationale: >-
+    Under GST an inter-state supply (IGST) and an intra-state supply (CGST + SGST)
+    are taxed differently: two letters apart, never the same. "Inter state" and
+    "Intrastate" differ from their hyphenated forms only by punctuation, and
+    "Intra-sate" is a typo of Intra-state.
+  column: supply_type
+  values: {Intra-state: 12, Export: 4, Inter-state: 3, SEZ: 2, Inter state: 1, Intrastate: 1, Intra-sate: 1}
+  same: [[Intra-state, Intrastate, Intra-sate], [Inter-state, Inter state]]
+  expect:
+    merge: [Intra-sate -> Intra-state]
+    alias: 3
+
+- id: merge-us-state-typos
+  family: category_merge
+  domain: retail (US)
+  difficulty: standard
+  rationale: >-
+    Misspelled state names (Califronia, Pensylvania, Massachusets, Conneticut).
+    Virginia and West Virginia are different states.
+  column: state
+  values: {California: 10, Pennsylvania: 8, Massachusetts: 6, Connecticut: 5, Virginia: 4, West Virginia: 3, Pensylvania: 2, Califronia: 1, Massachusets: 1, Conneticut: 1}
+  same: [[California, Califronia], [Pennsylvania, Pensylvania], [Massachusetts, Massachusets], [Connecticut, Conneticut]]
+  expect:
+    merge: [Califronia -> California, Conneticut -> Connecticut, Massachusets -> Massachusetts, Pensylvania -> Pennsylvania]
+    alias: 5
+
+- id: merge-latam-accents
+  family: category_merge
+  domain: logistics (Latin America)
+  difficulty: standard
+  rationale: >-
+    City names typed without accents or with a dropped letter (Bogota, Medellin, Sao
+    Paulo, Guadalajra) are the same cities.
+  column: ciudad
+  values: {Bogotá: 9, São Paulo: 8, Medellín: 7, Guadalajara: 6, Valparaíso: 3, Bogota: 2, Medellin: 2, Sao Paulo: 2, Guadalajra: 1}
+  same: [[Bogotá, Bogota], [Medellín, Medellin], [São Paulo, Sao Paulo], [Guadalajara, Guadalajra]]
+  expect:
+    merge: [Bogota -> Bogotá, Guadalajra -> Guadalajara, Medellin -> Medellín, Sao Paulo -> São Paulo]
+    alias: 4
+
+- id: merge-visa-application-status
+  family: category_merge
+  domain: government
+  difficulty: hard
+  rationale: >-
+    Deferred (decision postponed) and Referred (sent to another officer) are different
+    outcomes one letter apart. Aproved is a typo.
+  column: application_status
+  values: {Approved: 12, Deferred: 9, Rejected: 8, Withdrawn: 4, Referred: 3, Aproved: 1}
+  same: [[Approved, Aproved]]
+  expect:
+    merge: [Aproved -> Approved, Referred -> Deferred]
+    alias: 4
+
+- id: merge-in-city-spellings
+  family: category_merge
+  domain: logistics (India)
+  difficulty: easy
+  rationale: >-
+    Variant spellings of Indian cities: Hyderbad, Ahmadabad, Nasik and Simla are
+    Hyderabad, Ahmedabad, Nashik and Shimla.
+  column: city
+  values: {Hyderabad: 10, Ahmedabad: 9, Pune: 7, Nashik: 6, Shimla: 4, Ahmadabad: 2, Nasik: 2, Hyderbad: 1, Simla: 1}
+  same: [[Hyderabad, Hyderbad], [Ahmedabad, Ahmadabad], [Nashik, Nasik], [Shimla, Simla]]
+  expect:
+    merge: [Ahmadabad -> Ahmedabad, Hyderbad -> Hyderabad, Nasik -> Nashik, Simla -> Shimla]
+    alias: 4
+
+- id: merge-physio-movements
+  family: category_merge
+  domain: physiotherapy
+  difficulty: hard
+  rationale: >-
+    Abduction (away from the midline) and adduction (towards it) are opposite
+    movements, one letter apart. Extention is a typo of Extension.
+  column: movement
+  values: {Flexion: 9, Extension: 8, Abduction: 7, Rotation: 5, Adduction: 2, Extention: 1}
+  same: [[Extension, Extention]]
+  expect:
+    merge: [Adduction -> Abduction, Extention -> Extension]
+    alias: 4
+
+- id: merge-symptoms-dys
+  family: category_merge
+  domain: healthcare
+  difficulty: hard
+  rationale: >-
+    Dysphagia (difficulty swallowing) and dysphasia (difficulty speaking) are
+    different symptoms. Dyspnoea is the British spelling of dyspnea.
+  column: symptom
+  values: {Dyspnea: 9, Dysphagia: 8, Dyspepsia: 5, Dysuria: 4, Dysphasia: 2, Dyspnoea: 2}
+  same: [[Dyspnea, Dyspnoea]]
+  expect:
+    merge: [Dysphasia -> Dysphagia, Dyspnoea -> Dyspnea]
+    alias: 4
+
+# ============================================================== null_token
+- id: null-allergies-none-is-data
+  family: null_token
+  domain: healthcare
+  difficulty: hard
+  rationale: >-
+    "None" in an allergies column records the answer "no known allergies" - turning it
+    into a missing value loses that. "?" is an unanswered field.
+  column: allergies
+  values: {None: 12, Penicillin: 5, Peanuts: 4, Shellfish: 3, Latex: 2, Sulfa drugs: 2, "?": 2}
+  placeholders: ["?"]
+  expect: {nulls: ["?", None], alias: 6}
+
+- id: null-middle-name-dash
+  family: null_token
+  domain: CRM
+  difficulty: easy
+  rationale: >-
+    A dash where a middle name goes means the person has none recorded.
+  column: middle_name
+  values: {"-": 6, Kumar: 1, Rose: 1, James: 1, Anne: 1, Lee: 1, Marie: 1, Prakash: 1, Elena: 1, Wei: 1}
+  placeholders: ["-"]
+  expect: {nulls: ["-"]}
+
+- id: null-blood-group-unknown
+  family: null_token
+  domain: healthcare
+  difficulty: standard
+  rationale: >-
+    "Unknown" is not a blood group: the group was not recorded.
+  column: blood_group
+  values: {O+: 8, A+: 6, B+: 5, Unknown: 3, AB+: 2}
+  placeholders: [Unknown]
+  expect: {nulls: [Unknown], alias: 4}
+
+- id: null-namibia-country-code
+  family: null_token
+  domain: trade (southern Africa)
+  difficulty: hard
+  rationale: >-
+    ISO 3166 alpha-2 codes of southern African countries: NA is Namibia, between ZA,
+    BW and ZW, not "not available".
+  column: country_code
+  values: {ZA: 9, BW: 5, NA: 5, ZW: 4, MZ: 3, ZM: 3}
+  expect: {nulls: [NA], alias: 5}
+
+- id: null-dna-strand
+  family: null_token
+  domain: bioinformatics
+  difficulty: hard
+  rationale: >-
+    In a genome annotation "-" is the minus strand, as real as "+". "?" is an
+    unknown strand.
+  column: strand
+  values: {"+": 9, "-": 8, "?": 2}
+  placeholders: ["?"]
+  expect: {nulls: ["-", "?"], alias: 1}
+
+- id: null-chess-annotation
+  family: null_token
+  domain: games (chess)
+  difficulty: hard
+  rationale: >-
+    Chess move annotations: "?" marks a mistake, "??" a blunder, "!" a good move. The
+    "?" is data.
+  column: annotation
+  values: {"!": 6, "?": 5, "??": 3, "!!": 2, "!?": 2, "?!": 2}
+  expect: {nulls: ["?"], alias: 5}
+
+- id: null-phone-extension-double-dash
+  family: null_token
+  domain: CRM
+  difficulty: standard
+  rationale: >-
+    "--" in a phone-extension column means the contact has no extension recorded.
+  column: extension
+  values: {"--": 5, "214": 1, "305": 1, "118": 1, "4402": 1, "27": 1, "909": 1, "3310": 1, "56": 1, "781": 1}
+  placeholders: ["--"]
+  expect: {nulls: ["--"]}
+
+- id: null-backlogs-nil
+  family: null_token
+  domain: education (India)
+  difficulty: hard
+  rationale: >-
+    In Indian academic records "Nil" backlogs means zero pending papers - a count,
+    not a missing value.
+  column: backlogs
+  values: {Nil: 10, "1": 4, "2": 3, "3": 1}
+  expect: {nulls: [Nil]}
+
+- id: null-pets-none-vs-unknown
+  family: null_token
+  domain: real estate (rental applications)
+  difficulty: standard
+  rationale: >-
+    "None" answers "which pets?" with "no pets"; "Unknown" means the applicant left it
+    blank.
+  column: pets
+  values: {None: 10, Dog: 6, Cat: 5, Dog and cat: 2, Unknown: 2, Fish: 1}
+  placeholders: [Unknown]
+  expect: {nulls: [None, Unknown], alias: 5}
+
+- id: null-survey-question-mark
+  family: null_token
+  domain: customer survey
+  difficulty: easy
+  rationale: >-
+    "?" is a skipped rating. Dissatisfied is a rating of its own, not Satisfied.
+  column: satisfaction
+  values: {Satisfied: 8, Very satisfied: 6, Neutral: 4, Dissatisfied: 3, "?": 3, Very dissatisfied: 1}
+  placeholders: ["?"]
+  expect: {nulls: ["?"], alias: 5}
+
+- id: null-sweetener-none
+  family: null_token
+  domain: food service
+  difficulty: easy
+  rationale: >-
+    A coffee order's sweetener: "None" is the customer's choice of no sweetener.
+  column: sweetener
+  values: {None: 8, Sugar: 6, Honey: 3, Stevia: 2}
+  expect: {nulls: [None], alias: 3}
+
+- id: null-tracking-number-none
+  family: null_token
+  domain: logistics
+  difficulty: standard
+  rationale: >-
+    "None" in a tracking-number column is an exported empty field: no tracking number
+    has been issued.
+  column: tracking_number
+  values: {None: 4, TRK4471902385: 1, TRK4471902391: 1, TRK4471902402: 1, TRK4471902417: 1, TRK4471902425: 1, TRK4471902433: 1, TRK4471902448: 1, TRK4471902456: 1}
+  placeholders: [None]
+  expect: {nulls: [None]}
+
+- id: null-landmark-nil
+  family: null_token
+  domain: logistics (India addresses)
+  difficulty: standard
+  rationale: >-
+    "Nil" typed into the landmark field of an Indian address means no landmark was
+    given; it is not a place.
+  column: landmark
+  values: {Nil: 5, Near City Mall: 1, Opp. Bus Stand: 1, Behind Ram Temple: 1, Next to Post Office: 1, Near Water Tank: 1, Opp. Govt School: 1, Above Medical Store: 1}
+  placeholders: [Nil]
+  expect: {nulls: [Nil]}
+
+- id: null-age-question-mark
+  family: null_token
+  domain: CRM
+  difficulty: easy
+  rationale: >-
+    "?" in an age column is an unknown age.
+  column: age
+  values: {"34": 2, "27": 2, "45": 1, "52": 1, "31": 1, "38": 1, "61": 1, "29": 1, "?": 3}
+  placeholders: ["?"]
+  expect: {nulls: ["?"]}
+
+- id: null-referral-code-dash-none
+  family: null_token
+  domain: marketing
+  difficulty: standard
+  rationale: >-
+    A referral-code column: "-" and "none" both stand in for "no code entered";
+    neither is a code.
+  column: referral_code
+  values: {"-": 3, none: 2, REF-8K2Q: 1, REF-3PX7: 1, REF-9JM4: 1, REF-1TZ8: 1, REF-5WD2: 1, REF-7HN6: 1, REF-2QV9: 1, REF-6LC3: 1}
+  placeholders: ["-", none]
+  expect: {nulls: ["-", none]}
+
+- id: null-airport-nan
+  family: null_token
+  domain: travel (Pacific)
+  difficulty: hard
+  rationale: >-
+    IATA airport codes of Pacific routes: NAN is Nadi International Airport (Fiji),
+    next to SYD, AKL and BNE - not "not a number".
+  column: origin_airport
+  values: {SYD: 8, AKL: 6, NAN: 5, BNE: 4, MEL: 3, SUV: 2}
+  expect: {nulls: [NAN], alias: 5}
+
+- id: null-wifi-encryption-none
+  family: null_token
+  domain: IT (network inventory)
+  difficulty: standard
+  rationale: >-
+    A Wi-Fi access point's encryption setting: "None" is an open network, a real
+    configuration (and a finding), not a missing value.
+  column: encryption
+  values: {WPA2: 9, WPA3: 6, None: 4, WEP: 2}
+  expect: {nulls: [None], alias: 3}
+
+- id: null-lot-number-unknown-question
+  family: null_token
+  domain: pharmaceutical supply chain
+  difficulty: standard
+  rationale: >-
+    Batch lot numbers: "unknown" and "?" both mean the lot was not recorded.
+  column: lot_number
+  values: {unknown: 2, "?": 2, LOT24A117: 1, LOT24A121: 1, LOT24B004: 1, LOT24B019: 1, LOT24C233: 1, LOT24C240: 1, LOT24D051: 1, LOT24D066: 1}
+  placeholders: [unknown, "?"]
+  expect: {nulls: ["?", unknown]}
+
+# ============================================================== schema_match
+- id: schema-order-vs-ship-date
+  family: schema_match
+  domain: e-commerce
+  difficulty: standard
+  rationale: >-
+    Two date columns: the order was placed on one date and dispatched on another.
+    order_date is "Placed On", ship_date is "Dispatched On"; the amount is the INR
+    total.
+  columns:
+    Order Ref: [ORD-10411, ORD-10412, ORD-10413, ORD-10414, ORD-10415, ORD-10416]
+    Placed On: ["2026-03-02", "2026-03-02", "2026-03-04", "2026-03-05", "2026-03-07", "2026-03-08"]
+    Dispatched On: ["2026-03-04", "2026-03-05", "2026-03-05", "2026-03-08", "2026-03-09", "2026-03-11"]
+    Total (INR): ["₹1,240", "₹860", "₹2,315", "₹499", "₹3,100", "₹1,005"]
+  schema:
+    order_id: {dtype: string}
+    order_date: {dtype: date}
+    ship_date: {dtype: date}
+    amount: {dtype: float}
+  gold: {order_id: Order Ref, order_date: Placed On, ship_date: Dispatched On, amount: Total (INR)}
+  expect: {schema: [amount, order_date, ship_date]}
+
+- id: schema-billing-vs-shipping-pin
+  family: schema_match
+  domain: e-commerce (India)
+  difficulty: standard
+  rationale: >-
+    Two PIN-code columns: billing_postcode is the bill-to PIN, shipping_postcode the
+    ship-to PIN. The ship-to city is not a postcode.
+  columns:
+    Name: [Asha Verma, Rohan Mehta, Kavya Iyer, Arjun Nair, Meera Pillai, Vikram Rao]
+    Bill-to PIN: ["560001", "400050", "600028", "682016", "110017", "500032"]
+    Ship-to PIN: ["560034", "400072", "600040", "682020", "110025", "500081"]
+    Ship-to City: [Bengaluru, Mumbai, Chennai, Kochi, New Delhi, Hyderabad]
+  schema:
+    customer_name: {dtype: string}
+    billing_postcode: {dtype: string}
+    shipping_postcode: {dtype: string}
+  gold: {customer_name: Name, billing_postcode: Bill-to PIN, shipping_postcode: Ship-to PIN}
+  expect: {schema: [billing_postcode, customer_name, shipping_postcode]}
+
+- id: schema-loyalty-tier-has-no-source
+  family: schema_match
+  domain: CRM
+  difficulty: hard
+  rationale: >-
+    The file has an e-mail, a phone number and a membership start date, but no loyalty
+    tier: loyalty_tier has no source column ("Member Since" is a date, not a tier).
+  columns:
+    Mail ID: [asha.v@example.com, r.mehta@example.org, kavya.i@example.net, arjun.n@example.com, meera.p@example.org, vik.rao@example.net]
+    Contact No.: ["+91 98450 12345", "+91 98200 23456", "+91 94440 34567", "+91 94470 45678", "+91 98110 56789", "+91 98490 67890"]
+    Member Since: ["2021-04-12", "2019-11-03", "2023-01-27", "2020-08-15", "2022-06-30", "2018-02-09"]
+  schema:
+    customer_email: {dtype: email}
+    phone: {dtype: phone}
+    loyalty_tier: {dtype: category}
+  gold: {customer_email: Mail ID, phone: Contact No., loyalty_tier: null}
+  expect: {schema: [customer_email, loyalty_tier, phone]}
+
+- id: schema-hr-abbreviated-headers
+  family: schema_match
+  domain: HR (India)
+  difficulty: easy
+  rationale: >-
+    Standard HR abbreviations: Emp Code is the employee id, DOJ the date of joining,
+    Dept the department and CTC (LPA) the annual cost to company in lakhs.
+  columns:
+    Emp Code: [E1043, E1057, E1102, E1120, E1131, E1148]
+    DOJ: ["14/06/2021", "01/02/2022", "19/09/2022", "03/04/2023", "27/11/2023", "08/01/2024"]
+    Dept: [Engineering, Sales, Engineering, Finance, Sales, Legal]
+    CTC (LPA): ["12.5", "8.0", "18.2", "9.5", "7.8", "22.0"]
+  schema:
+    employee_id: {dtype: string}
+    date_of_joining: {dtype: date}
+    department: {dtype: category}
+    annual_ctc: {dtype: float}
+  gold: {employee_id: Emp Code, date_of_joining: DOJ, department: Dept, annual_ctc: CTC (LPA)}
+  expect: {schema: [annual_ctc, date_of_joining, department, employee_id]}
+
+- id: schema-gst-invoice-amounts
+  family: schema_match
+  domain: tax (India GST)
+  difficulty: hard
+  rationale: >-
+    A GST invoice: the taxable value is the net amount before tax, GST is the tax and
+    the invoice total is the gross. The rules' weak guess maps "Taxable Value" onto
+    tax_amount, which is wrong.
+  columns:
+    Invoice No: [INV/26/0412, INV/26/0413, INV/26/0414, INV/26/0415, INV/26/0416, INV/26/0417]
+    Taxable Value: ["10,000.00", "2,450.00", "18,300.00", "640.00", "7,125.00", "3,980.00"]
+    GST: ["1,800.00", "441.00", "3,294.00", "115.20", "1,282.50", "716.40"]
+    Invoice Total: ["11,800.00", "2,891.00", "21,594.00", "755.20", "8,407.50", "4,696.40"]
+  schema:
+    invoice_number: {dtype: string}
+    net_amount: {dtype: float}
+    tax_amount: {dtype: float}
+    gross_amount: {dtype: float}
+  gold: {invoice_number: Invoice No, net_amount: Taxable Value, tax_amount: GST, gross_amount: Invoice Total}
+  expect: {schema: [gross_amount, net_amount, tax_amount]}
+
+- id: schema-uk-patient-admissions
+  family: schema_match
+  domain: healthcare (UK)
+  difficulty: standard
+  rationale: >-
+    NHS-style headers: MRN is the patient identifier, DOB the date of birth, Admitted
+    the admission date and the Consultant the attending physician. Ward is a place.
+  columns:
+    MRN: [RX4410281, RX4410297, RX4410305, RX4410318, RX4410326, RX4410334]
+    DOB: ["12/03/1958", "28/07/1990", "05/11/1971", "17/01/1984", "30/09/1949", "22/05/2001"]
+    Admitted: ["02/02/2026", "03/02/2026", "03/02/2026", "05/02/2026", "06/02/2026", "08/02/2026"]
+    Consultant: [Dr N Shah, Dr P Okafor, Dr L Fischer, Dr N Shah, Dr A Moreno, Dr P Okafor]
+    Ward: [Ward 7B, Ward 3A, Ward 7B, Ward 5C, Ward 2A, Ward 3A]
+  schema:
+    patient_id: {dtype: string}
+    date_of_birth: {dtype: date}
+    admission_date: {dtype: date}
+    attending_physician: {dtype: string}
+  gold: {patient_id: MRN, date_of_birth: DOB, admission_date: Admitted, attending_physician: Consultant}
+  expect: {schema: [admission_date, attending_physician, date_of_birth, patient_id]}
+
+- id: schema-mx-spanish-headers
+  family: schema_match
+  domain: CRM (Mexico)
+  difficulty: hard
+  rationale: >-
+    Spanish headers from a Mexican customer file: Razón social is the company name,
+    RFC the tax id, Ciudad the city and Teléfono the phone number.
+  columns:
+    Razón social: [Comercializadora Delta SA de CV, Grupo Alameda SC, Textiles del Norte SA, Ferretera Puebla SA de CV, Servicios Coral SC, Distribuidora Orión SA]
+    RFC: [CDE190312KJ4, GAL050921AB1, TNO110704QZ8, FPU980115LM2, SCO170830TT5, DOR031122HX9]
+    Ciudad: [Monterrey, Guadalajara, Saltillo, Puebla, Mérida, Querétaro]
+    Teléfono: ["+52 81 5555 0142", "+52 33 5555 0178", "+52 844 555 0193", "+52 222 555 0127", "+52 999 555 0164", "+52 442 555 0111"]
+  schema:
+    customer_name: {dtype: string}
+    tax_id: {dtype: string}
+    city: {dtype: string}
+    phone: {dtype: phone}
+  gold: {customer_name: Razón social, tax_id: RFC, city: Ciudad, phone: Teléfono}
+  expect: {schema: [city, customer_name, phone, tax_id]}
+
+- id: schema-de-address-headers
+  family: schema_match
+  domain: logistics (DACH)
+  difficulty: standard
+  rationale: >-
+    German address headers: PLZ is the postcode, Ort the city and Land the country.
+    The rules' weak guess maps Ort onto country, which is wrong.
+  columns:
+    Straße: [Hauptstraße 12, Bahnhofstraße 4, Ringstraße 27, Lindenweg 9, Seefeldstrasse 31, Mühlenweg 3]
+    PLZ: ["10115", "80331", "50667", "1010", "8008", "20095"]
+    Ort: [Berlin, München, Köln, Wien, Zürich, Hamburg]
+    Land: [Deutschland, Deutschland, Deutschland, Österreich, Schweiz, Deutschland]
+  schema:
+    street: {dtype: string}
+    postcode: {dtype: string}
+    city: {dtype: string}
+    country: {dtype: string}
+  gold: {street: Straße, postcode: PLZ, city: Ort, country: Land}
+  expect: {schema: [city, country, postcode], alias: 2}
+
+- id: schema-retail-catalog
+  family: schema_match
+  domain: retail (India)
+  difficulty: standard
+  rationale: >-
+    A shop's item master: Item Code is the SKU, Description the product name, MRP
+    (maximum retail price) the unit price and On Hand the stock quantity.
+  columns:
+    Item Code: [HK-2231, HK-2232, EL-0910, EL-0911, GR-4410, GR-4415]
+    Description: [Steel Tiffin 3-tier, Non-stick Tawa 28cm, LED Bulb 9W, Extension Board 4-way, Basmati Rice 5kg, Toor Dal 1kg]
+    MRP: ["649.00", "899.00", "120.00", "449.00", "785.00", "189.00"]
+    On Hand: ["34", "12", "210", "48", "65", "140"]
+  schema:
+    sku: {dtype: string}
+    product_name: {dtype: string}
+    unit_price: {dtype: float}
+    stock_qty: {dtype: integer}
+  gold: {sku: Item Code, product_name: Description, unit_price: MRP, stock_qty: On Hand}
+  expect: {schema: [product_name, sku, stock_qty, unit_price]}
+
+- id: schema-telecom-subscribers
+  family: schema_match
+  domain: telecom (India)
+  difficulty: hard
+  rationale: >-
+    Telecom jargon: MSISDN is the subscriber's phone number, Pack the plan and Rental
+    (Rs) the monthly charge.
+  columns:
+    MSISDN: ["919845012345", "919820023456", "919444034567", "919447045678", "919811056789", "919849067890"]
+    Pack: [Unlimited 299, Data Booster 98, Unlimited 499, Family 999, Unlimited 299, Senior 149]
+    Rental (Rs): ["299", "98", "499", "999", "299", "149"]
+    Act. Date: ["2025-01-14", "2025-03-02", "2025-03-19", "2025-06-07", "2025-08-21", "2025-10-30"]
+  schema:
+    subscriber_phone: {dtype: phone}
+    plan_name: {dtype: string}
+    monthly_charge: {dtype: float}
+    activation_date: {dtype: date}
+  gold: {subscriber_phone: MSISDN, plan_name: Pack, monthly_charge: Rental (Rs), activation_date: Act. Date}
+  expect: {schema: [activation_date, monthly_charge, plan_name, subscriber_phone]}
+
+- id: schema-discount-has-no-source
+  family: schema_match
+  domain: e-commerce
+  difficulty: hard
+  rationale: >-
+    Promo holds coupon codes and Delivery Charges the shipping fee. Nothing holds a
+    discount amount: discount_amount has no source (Item Total is not a discount).
+  columns:
+    Order No: [A-77101, A-77102, A-77103, A-77104, A-77105, A-77106]
+    Promo: [DIWALI10, FREESHIP, WELCOME50, DIWALI10, SUMMER15, FESTIVE20]
+    Delivery Charges: ["40.00", "0.00", "40.00", "60.00", "0.00", "40.00"]
+    Item Total: ["1,299.00", "649.00", "2,150.00", "899.00", "3,499.00", "475.00"]
+  schema:
+    order_number: {dtype: string}
+    coupon_code: {dtype: string}
+    shipping_fee: {dtype: float}
+    discount_amount: {dtype: float}
+  gold: {order_number: Order No, coupon_code: Promo, shipping_fee: Delivery Charges, discount_amount: null}
+  expect: {schema: [coupon_code, discount_amount, shipping_fee]}
+
+- id: schema-invoice-vs-due-date
+  family: schema_match
+  domain: finance (accounts payable)
+  difficulty: standard
+  rationale: >-
+    Three dates on a bill: it was issued on the Bill Date, must be paid by the Pay By
+    date, and covers a period ending on Period End. invoice_date is the bill date,
+    due_date the pay-by date.
+  columns:
+    Vendor: [Northwind Supplies, Blue Harbor Freight, Kestrel Office, Northwind Supplies, Arcadia Power, Blue Harbor Freight]
+    Bill Date: ["2026-01-05", "2026-01-09", "2026-01-12", "2026-02-04", "2026-02-07", "2026-02-10"]
+    Pay By: ["2026-02-04", "2026-02-08", "2026-01-27", "2026-03-06", "2026-02-21", "2026-03-11"]
+    Period End: ["2025-12-31", "2025-12-31", "2025-12-31", "2026-01-31", "2026-01-31", "2026-01-31"]
+  schema:
+    invoice_date: {dtype: date}
+    due_date: {dtype: date}
+  gold: {invoice_date: Bill Date, due_date: Pay By}
+  expect: {schema: [due_date, invoice_date]}
+
+- id: schema-contacts-easy
+  family: schema_match
+  domain: CRM
+  difficulty: easy
+  rationale: >-
+    Plain synonyms: Customer is the full name, E-mail the e-mail address and Cell the
+    mobile number.
+  columns:
+    Customer: [Lena Fischer, Omar Haddad, Priya Raman, Tomás Ruiz, Grace Liu, Kwame Mensah]
+    E-mail: [lena.f@example.com, omar.h@example.org, priya.r@example.net, tomas.r@example.com, grace.l@example.org, kwame.m@example.net]
+    Cell: ["+1 415 555 0132", "+1 646 555 0187", "+1 312 555 0164", "+1 713 555 0119", "+1 206 555 0148", "+1 617 555 0173"]
+  schema:
+    full_name: {dtype: string}
+    email_address: {dtype: email}
+    mobile: {dtype: phone}
+  gold: {full_name: Customer, email_address: E-mail, mobile: Cell}
+  expect: {schema: [email_address, full_name, mobile]}
