@@ -1,0 +1,90 @@
+name: Playground (GitHub Pages)
+
+# Publishes playground/ (the zero-install, in-browser CleanFrame playground) to
+# https://inboxpraveen.github.io/Cleanframe/. The page installs a wheel built from
+# this commit, so it always runs what is on main.
+#
+# One-time setup: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "playground/**"
+      - "cleanframe/**"
+      - "pyproject.toml"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; never cancel one that is already publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build the playground
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Builds cleanframe_engine-<version>-py3-none-any.whl from this checkout plus the
+      # pinned pure-Python openpyxl wheels into playground/wheels/, and writes
+      # playground/wheels/manifest.json. The same script the local dev server runs.
+      - name: Build the wheel bundle
+        run: |
+          python -m pip install --upgrade pip
+          python playground/dev_server.py --build-only
+          cat playground/wheels/manifest.json
+          ls -la playground/wheels
+
+      - name: Check the bundle
+        run: |
+          python - <<'PY'
+          import json, pathlib, zipfile
+          wheels = pathlib.Path("playground/wheels")
+          manifest = json.loads((wheels / "manifest.json").read_text())
+          for name in [manifest["wheel"], *manifest.get("xlsx", [])]:
+              assert name.endswith("-none-any.whl"), name
+              assert zipfile.ZipFile(wheels / name).testzip() is None, name
+          assert manifest["xlsx"], "Excel wheels missing: .xlsx input would be disabled"
+          print("ok:", manifest)
+          PY
+
+      # The page's Python glue against the library it is about to ship (a few seconds).
+      - name: Test the playground glue
+        run: |
+          pip install -e ".[dev]"
+          pytest tests/test_playground.py -q
+
+      # Only what the page serves; the smoke test's node_modules never exists in CI.
+      - name: Drop files the site does not need
+        run: rm -rf playground/tests/node_modules playground/__pycache__
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: playground
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
