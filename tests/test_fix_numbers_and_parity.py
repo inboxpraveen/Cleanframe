@@ -282,11 +282,26 @@ def test_single_column_frames_are_not_deduplicated_automatically():
         assert len(cf.clean(df).dataframe) == 7
 
 
+def test_dedup_ignore_case_parity_on_string_dtype():
+    # The exported helper is a copy of ops._dedup_key_column; both must fold the
+    # pandas-3 "str"/"string" dtype, not only object columns.
+    df = pd.DataFrame(
+        {"email": pd.Series(["a@x.com", "A@X.com", "b@x.com"], dtype="string"), "v": ["1", "2", "3"]}
+    )
+    rec = Recipe.from_yaml("version: 1\ndedup: {subset: [email], ignore_case: true}\n")
+    executed = cf.apply_recipe(df, rec, check_drift=False).dataframe
+    generated = _exec_generated(rec, df)
+    assert executed["v"].tolist() == ["1", "3"]
+    assert generated["v"].tolist() == ["1", "3"]
+
+
 def test_title_case_survives_ordinals_and_apostrophes():
     df = pd.DataFrame({"t": ["3rd street", "o'neil mcdonald", "new  YORK", "don't", "jean-luc", None]})
     rec = _recipe("[title_case]", "t")
     out = cf.apply_recipe(df, rec, check_drift=False).dataframe["t"].tolist()
-    assert out == ["3rd Street", "O'Neil Mcdonald", "New York", "Don't", "Jean-Luc", None]
+    assert out[:5] == ["3rd Street", "O'Neil Mcdonald", "New York", "Don't", "Jean-Luc"]
+    # pandas 3 stores the missing cell of a text column as NaN, pandas 2 keeps None.
+    assert pd.isna(out[5])
     assert _same(pd.Series(out), _exec_generated(rec, df)["t"])
 
 

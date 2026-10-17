@@ -39,11 +39,18 @@ class QualityScore:
 
 
 def _affected_fraction(evidence: dict, n_rows: int) -> float:
+    """Share of rows an issue touches, from the first count its evidence carries.
+
+    ``affected`` is the explicit count. ``unparsed`` comes last because it counts only
+    the values a fix *fails* on: read first, a date column in three formats whose values
+    all parse (``unparsed: 0``) scored as touching no rows at all.
+    """
     if n_rows <= 0:
         return _DEFAULT_FRACTION
-    for key in ("count", "null_count", "unparsed", "n_failed"):
-        if key in evidence and isinstance(evidence[key], (int, float)):
-            return min(1.0, evidence[key] / n_rows)
+    for key in ("affected", "count", "null_count", "n_failed", "unparsed"):
+        value = evidence.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return min(1.0, value / n_rows)
     return _DEFAULT_FRACTION
 
 

@@ -50,25 +50,32 @@ def _clean(value: str) -> str:
 _SIGNIFICANT = frozenset("-+.,()%$€£¥₹")
 #: A percent sign or currency symbol changes what a value *is*, wherever it sits: "10 %" is not "10".
 _ALWAYS_SIGNIFICANT = frozenset("%$€£¥₹")
+#: Marks that change meaning next to letters too: blood groups ``A+``/``A-``, grades
+#: ``B+``/``B``, languages ``C``/``C++``/``C#``. A hyphen *between* letters
+#: (``New-York``) stays cosmetic; a leading or trailing one is kept by the loop below.
+_MARK_SIGNIFICANT = frozenset("+#")
 
 
 def _skeleton(value: str) -> str:
-    """The characters that make one *number-like* value differ from another.
+    """The characters that make one value differ from another beyond its letters.
 
-    Digits, plus any sign/decimal/grouping/currency mark touching a digit (or a
-    leading sign). ``-1,200`` / ``1,200`` / ``12.00`` / ``A-1`` / ``A1`` all have
-    different skeletons, so they are never one category — whereas ``St. Louis`` and
-    ``St Louis`` (punctuation between letters) share one.
+    Digits; any sign/decimal/grouping/currency mark touching a digit; a leading sign or
+    a trailing ``-``; and every ``+``/``#``. ``-1,200`` / ``1,200`` / ``12.00`` /
+    ``A-1`` / ``A1`` / ``A+`` / ``A-`` / ``C#`` all have different skeletons, so they
+    are never one category — whereas ``St. Louis`` and ``St Louis`` (punctuation
+    between letters) share one.
     """
     out = []
+    value = value.strip()
     last = len(value) - 1
     for i, c in enumerate(value):
-        if c.isdigit() or c in _ALWAYS_SIGNIFICANT:
+        if c.isdigit() or c in _ALWAYS_SIGNIFICANT or c in _MARK_SIGNIFICANT:
             out.append(c)
         elif c in _SIGNIFICANT and (
             (i > 0 and value[i - 1].isdigit())
             or (i < last and value[i + 1].isdigit())
             or (i == 0 and c in "-+")
+            or (i == last and c == "-")
         ):
             out.append(c)
     return "".join(out)
@@ -105,19 +112,106 @@ _NEGATION_PREFIXES = (
 )
 
 
-def _is_negation_pair(a: str, b: str) -> bool:
-    """True when one spelling is the other plus a negation/repetition prefix."""
-    x, y = normalize_key(a), normalize_key(b)
-    if x == y:
-        return False
+def _negated(x: str, y: str) -> bool:
     longer, shorter = (x, y) if len(x) > len(y) else (y, x)
     if not shorter or not longer.endswith(shorter):
         return False
     return longer[: -len(shorter)] in _NEGATION_PREFIXES
 
 
-def _cluster(counts: dict[str, int], seed_map: dict[str, str] | None) -> dict[str, str]:
-    """Return a mapping ``{variant: canonical}`` covering only values that change."""
+_WORD_RE = re.compile(r"[0-9A-Za-z]+")
+
+
+def _is_negation_pair(a: str, b: str) -> bool:
+    """True when one spelling is the other plus a negation/repetition prefix.
+
+    Checked on the whole value (``uninsured``/``insured``, ``not satisfied``) and word
+    by word, so a negated word inside a phrase counts too (``Very dissatisfied`` /
+    ``Very satisfied``).
+    """
+    x, y = normalize_key(a), normalize_key(b)
+    if x == y:
+        return False
+    if _negated(x, y):
+        return True
+    wa = [w.casefold() for w in _WORD_RE.findall(a)]
+    wb = [w.casefold() for w in _WORD_RE.findall(b)]
+    if len(wa) == len(wb):
+        differing = [(p, q) for p, q in zip(wa, wb, strict=True) if p != q]
+        return len(differing) == 1 and _negated(*differing[0])
+    return False
+
+
+def _edit_distance(a: str, b: str, limit: int) -> int:
+    """Optimal-string-alignment distance (a transposition is one edit), capped at ``limit + 1``."""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    prev2: list[int] = []
+    prev = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        if min(cur) > limit:
+            return limit + 1
+        prev2, prev = prev, cur
+    return prev[-1]
+
+
+def _is_typo_distance(a: str, b: str) -> bool:
+    """True when ``a`` and ``b`` are one typo apart.
+
+    Similarity alone folded different words that share most of their letters:
+    ``Austria`` into ``Australia``, ``Hypothyroidism`` into ``Hyperthyroidism``,
+    ``Prednisone`` into ``Prednisolone`` - all two edits apart. A typo is a dropped,
+    doubled, swapped or wrong letter: one edit. Rarer two-edit typos are left for a
+    human or a decision model (an alias question), because a wrong merge corrupts data
+    and a missed one only leaves a spelling unmerged.
+    """
+    x, y = normalize_key(a), normalize_key(b)
+    return _edit_distance(x, y, 1) <= 1
+
+
+def _cluster(
+    counts: dict[str, int],
+    seed_map: dict[str, str] | None,
+    forbidden: frozenset[tuple[str, str]] | None = None,
+) -> dict[str, str]:
+    """Return a mapping ``{variant: canonical}`` covering only values that change.
+
+    ``forbidden`` holds ``(group canonical, cluster canonical)`` pairs that must not
+    fuzzy-merge - the pairs a decision model said are different categories (see
+    :mod:`cleanframe.decisions`). It never adds a merge.
+    """
+    groups, canon_of_group, cluster_rep = _cluster_groups(counts, forbidden)
+
+    # 3) build variant -> canonical, honouring any seed overrides first.
+    mapping: dict[str, str] = {}
+    for key, spellings in groups.items():
+        rep_key = cluster_rep[key]
+        canonical = canon_of_group[rep_key]
+        for value in spellings:
+            target = (seed_map or {}).get(value, canonical)
+            if value != target:
+                mapping[value] = target
+    # Sort keys so the emitted recipe is byte-identical regardless of input row
+    # order (the cleaned data is order-independent either way).
+    return dict(sorted(mapping.items()))
+
+
+def _cluster_groups(
+    counts: dict[str, int],
+    forbidden: frozenset[tuple[str, str]] | None = None,
+) -> tuple[dict[str, dict[str, int]], dict[str, str], dict[str, str]]:
+    """Group spellings, then fuzzy-merge whole groups.
+
+    Returns ``(groups, canon_of_group, cluster_rep)``: the spellings of each group
+    with their counts, each group's canonical spelling, and the group each group was
+    folded into (itself when it was not merged).
+    """
     # 1) group by aggressive normalisation key
     groups: dict[str, dict[str, int]] = {}
     for value, n in counts.items():
@@ -149,9 +243,12 @@ def _cluster(counts: dict[str, int], seed_map: dict[str, str] | None) -> dict[st
                 continue
             if _skeleton(canon) != _skeleton(canon_of_group[rep]):
                 continue
+            if forbidden and (canon, canon_of_group[rep]) in forbidden:
+                continue
             if (
                 similarity(canon, canon_of_group[rep]) >= _FUZZY_THRESHOLD
                 and key_count <= rep_count * _FUZZY_MERGE_MAX_RATIO
+                and _is_typo_distance(canon, canon_of_group[rep])
             ):
                 match = rep
                 break
@@ -160,19 +257,28 @@ def _cluster(counts: dict[str, int], seed_map: dict[str, str] | None) -> dict[st
             cluster_rep[key] = key
         else:
             cluster_rep[key] = match
+    return groups, canon_of_group, cluster_rep
 
-    # 3) build variant -> canonical, honouring any seed overrides first.
-    mapping: dict[str, str] = {}
-    for key, spellings in groups.items():
-        rep_key = cluster_rep[key]
-        canonical = canon_of_group[rep_key]
-        for value in spellings:
-            target = (seed_map or {}).get(value, canonical)
-            if value != target:
-                mapping[value] = target
-    # Sort keys so the emitted recipe is byte-identical regardless of input row
-    # order (the cleaned data is order-independent either way).
-    return dict(sorted(mapping.items()))
+
+#: Semantic types whose values are identifiers or formatted data, never categories.
+_NOT_CATEGORY_TYPES = frozenset({"email", "phone", "url", "currency", "date", "datetime", "id"})
+
+
+def is_category_column(series: pd.Series, cp) -> bool:  # noqa: ANN001 - ColumnProfile
+    """True for a low-cardinality text column the category rules apply to."""
+    if cp is None or cp.count == 0 or not is_string_like(series):
+        return False
+    return cp.unique_count <= _MAX_CATEGORY_CARDINALITY and cp.semantic_type not in _NOT_CATEGORY_TYPES
+
+
+def category_counts(series: pd.Series) -> dict[str, int]:
+    """Whitespace-normalised spelling -> count, over the detector sample."""
+    counts: dict[str, int] = {}
+    for v in sample_non_null(series):
+        if isinstance(v, str):
+            cleaned = _clean(v)
+            counts[cleaned] = counts.get(cleaned, 0) + 1
+    return counts
 
 
 @detector("categories", priority=50)
@@ -180,21 +286,11 @@ def detect_categories(series: pd.Series, ctx: DetectorContext) -> Issues:
     """Cluster case/whitespace/typo variants of a category into one canonical value."""
     issues = Issues()
     cp = ctx.column_profile
-    if cp is None or cp.count == 0:
-        return issues
-    if not is_string_like(series):
-        return issues
-    # Only meaningful for low-cardinality columns.
-    if cp.unique_count > _MAX_CATEGORY_CARDINALITY or cp.semantic_type in (
-        "email", "phone", "url", "currency", "date", "datetime", "id",
-    ):
+    # Only meaningful for low-cardinality text columns.
+    if not is_category_column(series, cp):
         return issues
 
-    counts: dict[str, int] = {}
-    for v in sample_non_null(series):
-        if isinstance(v, str):
-            cleaned = _clean(v)
-            counts[cleaned] = counts.get(cleaned, 0) + 1
+    counts = category_counts(series)
     if len(counts) < 2:
         return issues
 

@@ -1247,6 +1247,16 @@ def _dedup_key_column(col: pd.Series, ignore_case: bool = False) -> pd.Series:
     """The comparison key for one column: case-folded strings when asked, and booleans
     kept distinct from the numbers they compare equal to (``1 == True == 1.0``)."""
     if not pd.api.types.is_object_dtype(col.dtype):
+        # pandas 3 reads text as the ``str`` dtype (and callers may pass ``string`` or a
+        # categorical). Those hold only strings and missing values, so case folding is
+        # the only key transform they need - skipping them made ``ignore_case`` a
+        # silent no-op on pandas 3.
+        if ignore_case and (
+            pd.api.types.is_string_dtype(col.dtype) or isinstance(col.dtype, pd.CategoricalDtype)
+        ):
+            return col.astype(object).map(
+                lambda v: v.strip().casefold() if isinstance(v, str) else v
+            )
         return col
     mixed = pd.api.types.infer_dtype(col, skipna=True).startswith("mixed")
 

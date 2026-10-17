@@ -84,7 +84,7 @@ iban = "my_pkg.cleanframe_plugin"
 ```
 
 ```bash
-cleanframe --plugin my_pkg.cleanframe_plugin apply in.csv --recipe r.yaml   # explicit, repeatable
+cleanframe apply in.csv --recipe r.yaml --plugin my_pkg.cleanframe_plugin   # explicit, repeatable
 CLEANFRAME_PLUGINS=my_pkg.cleanframe_plugin,other_mod cleanframe apply ...   # environment
 ```
 

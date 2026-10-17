@@ -98,6 +98,20 @@ def test_dedup_ignore_case_frame_op():
     assert out.index.tolist() == [0, 2]
 
 
+@pytest.mark.parametrize("dtype", ["string", "category"])
+def test_dedup_ignore_case_on_string_and_category_dtypes(dtype):
+    # pandas 3 reads text as dtype "str"; ignore_case used to fold only object columns,
+    # so on pandas 3 it silently kept case-variant duplicates.
+    df = pd.DataFrame(
+        {"email": pd.Series(["a@x.com", " A@X.com", "b@x.com", None], dtype=dtype), "v": [1, 2, 3, 4]}
+    )
+    out = apply_frame_op(Op("dedup", {"subset": ["email"], "ignore_case": True}), df)
+    assert out.index.tolist() == [0, 2, 3]
+    # Without ignore_case nothing folds.
+    out = apply_frame_op(Op("dedup", {"subset": ["email"]}), df)
+    assert out.index.tolist() == [0, 1, 2, 3]
+
+
 def test_normalize_phone_country_code():
     out = col(Op("normalize_phone", {"default_country_code": "+91"}), ["080 22334455", "+91 99", "12-34-567"])
     # leading national-trunk 0 is dropped before prepending the country code

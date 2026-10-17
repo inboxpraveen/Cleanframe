@@ -160,6 +160,12 @@ def _to_na(series, tokens=None, case_insensitive=True):
 
 def _dedup_key_column(col, ignore_case=False):
     if col.dtype != object:
+        if ignore_case and (
+            pd.api.types.is_string_dtype(col.dtype) or isinstance(col.dtype, pd.CategoricalDtype)
+        ):
+            return col.astype(object).map(
+                lambda v: v.strip().casefold() if isinstance(v, str) else v
+            )
         return col
     mixed = pd.api.types.infer_dtype(col, skipna=True).startswith("mixed")
     if not (ignore_case or mixed):
