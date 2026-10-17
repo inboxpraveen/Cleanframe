@@ -24,7 +24,10 @@ Profile, plan, and clean.
 | `planner` | Planner \| `None` | `None` | Custom planner object with a `.plan()` method |
 | `max_tokens_budget` | int \| None | `None` | Hard LLM token cap |
 | `llm_exposure` | `"metadata"` \| `"sample"` \| `"none"` | `"metadata"` | What the model may see |
-| `llm_fallback` | `bool` | `True` | `False` raises instead of degrading to the rules planner when an LLM call fails |
+| `llm_fallback` | `bool` | `True` | `False` raises instead of degrading to the rules planner when an LLM or decision call fails |
+| `decide` | `None` \| spec \| client | `None` | Decision backend for judgment calls: `"typesafe/jev-latest"`, `"openrouter/typesafe/jev-1.14"`, `"systemone/<model>"`, `"rules"`, an LLM spec, or an object with `.decide()`. Not combinable with `llm=`. See [Decision models](Decision-Models) |
+| `decision_threshold` | `float` | `0.9` | Probability an answer needs before it changes data (the mode's threshold applies when higher) |
+| `max_decisions` | `int` | `200` | Cap on questions asked |
 | `source` | `str` \| `None` | `None` | Label recorded in the recipe / report for a DataFrame input |
 | `sheet` | `str` \| `int` \| `None` | `None` | Excel sheet name, or 0-based index (file input) |
 | `columns` | `list[str]` \| `None` | `None` | `usecols` filter — keeps file order, not a reorder |
@@ -50,7 +53,10 @@ result.issues
 result.quality
 result.log
 result.code          # CodeArtifact — standalone pandas
+result.decisions     # DecisionLog when decide= was used: .summary(), .records
 ```
+
+`result.quality` is scored from the detectors alone, so it never depends on a decision backend.
 
 `result.dataframe` is indexed `0..n-1` — the stable positional row ids the diff and quarantine refer to.
 
@@ -64,6 +70,14 @@ Useful `options` keys:
 | `region` | Alias for `phone_country_code` |
 | `category_map` | Seed alias map `{column: {variant: canonical}}` |
 | `rename_columns` | `False` skips the automatic snake_case pass over every column; detector- and schema-proposed renames still apply (default `True`) |
+
+---
+
+## Demo data
+
+`cleanframe.demo.demo_file(name)` returns the path of a bundled sample (`"messy_customers.csv"`,
+`"customer.schema.yaml"`, `"next_month_customers.csv"`); `cleanframe.demo.run_demo(dir)` runs the
+guided demo that `cleanframe demo` narrates.
 
 ---
 

@@ -300,6 +300,9 @@ def clean(
     sep: str | None = None,
     encoding: str | None = None,
     llm_fallback: bool = True,
+    decide: Any = None,
+    decision_threshold: float = 0.9,
+    max_decisions: int = 200,
 ) -> CleanResult:
     """Profile, plan, and clean ``data`` — the main entry point.
 
@@ -343,6 +346,20 @@ def clean(
     llm_exposure:
         ``"metadata"`` (default), ``"sample"`` (also sends example cell values) or
         ``"none"`` (no request at all). Validated case-insensitively on every call.
+        It governs ``decide=`` too: category questions need ``"sample"``.
+    decide:
+        Optional decision backend that answers the judgment calls rules leave open
+        (category aliases, typo merges, ambiguous null tokens, weak schema matches)
+        as typed questions: ``"typesafe/jev-latest"``, ``"openrouter/typesafe/jev-1.14"``,
+        ``"systemone/<model>"`` (self-hosted, ``SYSTEMONE_BASE_URL``), ``"rules"``, any
+        LLM spec, or an object with ``.decide()``. Accepted answers are frozen into the
+        recipe as ordinary ops; replay never calls the backend. Cannot be combined
+        with ``llm=`` yet. See :mod:`cleanframe.decisions`.
+    decision_threshold:
+        Probability an answer needs before it changes data (the mode's threshold
+        applies when it is higher). Below it, answers are recorded as suggestions.
+    max_decisions:
+        Upper bound on questions asked, a cost and latency cap.
 
     Returns
     -------
@@ -352,6 +369,26 @@ def clean(
     from .llm import coerce_exposure
 
     llm_exposure = coerce_exposure(llm_exposure).value  # fail on a typo before any work
+    decision_client = None
+    if decide is not None:
+        if llm is not None:
+            raise CleanFrameError(
+                "decide= and llm= cannot be combined yet: the LLM planner writes the whole "
+                "recipe and would discard the decisions. Use one of them."
+            )
+        if (
+            isinstance(decision_threshold, bool)
+            or not isinstance(decision_threshold, (int, float))
+            or not 0 <= decision_threshold <= 1
+        ):
+            raise CleanFrameError(
+                f"decision_threshold must be a number between 0 and 1, got {decision_threshold!r}."
+            )
+        if isinstance(max_decisions, bool) or not isinstance(max_decisions, int) or max_decisions < 0:
+            raise CleanFrameError(f"max_decisions must be 0 or more, got {max_decisions!r}.")
+        from .decisions import get_decision_client
+
+        decision_client = get_decision_client(decide)  # a bad spec fails before any reading
     df, source, read_binding, read_notes = _read_input(
         data, source, sheet=sheet, columns=columns, nrows=nrows, skiprows=skiprows,
         header_row=header_row, correct_format=correct_format, text=text, sep=sep, encoding=encoding, warn=True,
@@ -361,10 +398,31 @@ def clean(
 
     profile = profile_dataframe(df)
     issues = run_detectors(df, profile=profile, schema=schema_obj, options=options)
+    # Scored from the detectors alone, so the quality score never depends on a model.
+    quality = quality_score(profile, issues)
+    decision_log = None
+    if decision_client is not None:
+        from .decisions import refine_issues
+
+        if llm_exposure == "none":
+            warnings.warn(
+                "CleanFrame: llm_exposure='none' keeps everything local, so the decision "
+                "backend was not called.",
+                CleanFrameWarning,
+                stacklevel=2,
+            )
+        issues, decision_log = refine_issues(
+            df, profile, issues,
+            client=decision_client, schema=schema_obj, mode=mode, exposure=llm_exposure,
+            decision_threshold=float(decision_threshold), max_questions=max_decisions,
+            options=options, fallback=llm_fallback,
+        )
     the_planner = _resolve_planner(
         planner, llm, llm_exposure, max_tokens_budget, llm_fallback=llm_fallback
     )
     recipe = the_planner.plan(df, profile, issues, schema=schema_obj, mode=mode, options=options)
+    if decision_log is not None:
+        recipe.meta["decisions"] = decision_log.to_meta()
 
     # Record the read/selection + format binding so `apply` re-reads identically.
     if read_binding:
@@ -374,7 +432,6 @@ def clean(
 
     max_diff = options.get("max_diff_changes", DEFAULT_MAX_DIFF_CHANGES)
     exec_result = execute(recipe, df, mode=mode, max_diff_changes=max_diff)
-    quality = quality_score(profile, issues)
 
     return CleanResult(
         dataframe=exec_result.dataframe,
@@ -387,6 +444,7 @@ def clean(
         quality=quality,
         source=source,
         log=[*(f"read-fix: {n}" for n in read_notes), *exec_result.log],
+        decisions=decision_log,
     )
 
 

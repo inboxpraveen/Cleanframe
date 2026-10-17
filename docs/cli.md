@@ -50,6 +50,37 @@ Accepted by `report`, `clean`, `apply`, `suggest`, `infer-schema`:
 
 `--skiprows` and `--nrows` count *data rows* — identically for CSV, Excel, Parquet and JSON. A negative value is a usage error. Under `--skiprows`/`--nrows` the diff's `row_id` is relative to the loaded slice.
 
+## `demo`
+
+A guided run on sample data that ships inside the package, so it works right after
+`pip install cleanframe-engine`, with no clone and no API key. It copies three files into
+`--out-dir`, then profiles the messy file, cleans it into a recipe, replays the recipe on next
+month's file (which has drifted, so the replay **stops**), and drafts the patch that makes it
+replay cleanly. Every step prints the equivalent command.
+
+```bash
+cleanframe demo                      # writes ./cleanframe-demo/
+cleanframe demo --out-dir /tmp/cf --open
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--out-dir DIR` | Where to write the sample files and outputs (default `./cleanframe-demo`) |
+| `--overwrite` | Replace the files of an earlier demo run (refused otherwise) |
+| `--open` | Open the profiling report in a browser |
+
+## `mcp`
+
+Serve CleanFrame's agent tools over the Model Context Protocol on stdio, for Claude Code,
+Claude Desktop, Cursor, VS Code, Codex and other MCP clients. Needs the extra:
+`pip install "cleanframe-engine[mcp]"`. Equivalent to the `cleanframe-mcp` script; `--plugin` and
+`--no-plugins` work as for every command. `--json` is refused, because stdout is the protocol
+channel. See [AI agents](agents.md).
+
+```bash
+claude mcp add cleanframe -- cleanframe mcp
+```
+
 ## `report`
 
 Profile a file and write an HTML report (no transforms applied).
@@ -90,7 +121,10 @@ cleanframe clean examples/messy_customers.csv \
 | `--llm provider/model` | LLM planner, e.g. `anthropic/claude-sonnet-4-6`, `openrouter/anthropic/claude-sonnet-4`, `groq/llama-3.3-70b-versatile` |
 | `--max-tokens N` | LLM token budget cap |
 | `--llm-exposure none\|metadata\|sample` | What the LLM may see (default: `metadata` — never raw cells) |
-| `--no-llm-fallback` | Fail instead of degrading to the rules planner when an LLM call fails |
+| `--no-llm-fallback` | Fail instead of degrading to the rules planner when an LLM or decision call fails |
+| `--decide SPEC` | Decision backend for the judgment calls rules leave open: `typesafe/jev-latest`, `openrouter/typesafe/jev-1.14`, `systemone/MODEL`, `rules`, or any `--llm` spec (see [Decision models](decisions.md)). Category questions need `--llm-exposure sample` |
+| `--decision-threshold P` | Probability a decision needs before it changes data (default `0.9`; the mode's threshold applies if higher) |
+| `--max-decisions N` | Most questions to ask the decision backend (default `200`) |
 | `--mode review\|auto\|strict` | Confidence / failure policy (see [Modes](#modes)) |
 | `--overwrite` | Allow writing output over the input file (loses the original) |
 
@@ -203,7 +237,7 @@ human-readable output goes to stderr, so `cleanframe ... --json | jq` is safe in
 
 ```json
 {
-  "cleanframe_version": "0.4.0",
+  "cleanframe_version": "0.5.0",
   "command": "apply",
   "input": "incoming.csv",
   "status": "ok",
@@ -217,10 +251,11 @@ human-readable output goes to stderr, so `cleanframe ... --json | jq` is safe in
 }
 ```
 
-`status` is one of `ok`, `drift`, `validation_failed`, `error`. A failure adds `"error": {"type", "message"}`; a
+`status` is one of `ok`, `drift`, `validation_failed`, `error`, `usage_error`. A failure adds `"error": {"type", "message"}`; a
 drift stop adds the findings (`kind`, `severity`, `column`, `message`). Fields depend on the command
-(`quality` for `report`, `chunks` and row counts for `apply --chunksize`, `sheets` for workbooks). Usage errors
-(exit `2`) are reported by `argparse` before the summary can be built.
+(`quality` for `report`, `chunks` and row counts for `apply --chunksize`, `sheets` for workbooks, `decisions` for
+`clean --decide`). A usage error (exit `2`) still prints one object, with `"command": null`,
+`"status": "usage_error"`, the argparse message in `error.message`, and no `input` key.
 
 ## Exit codes
 

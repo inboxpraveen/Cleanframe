@@ -160,6 +160,16 @@ def _positive_int(text: str) -> int:
     return value
 
 
+def _probability(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number between 0 and 1, got {text!r}") from None
+    if not 0 <= value <= 1:
+        raise argparse.ArgumentTypeError(f"must be between 0 and 1, got {value}")
+    return value
+
+
 def _default_out(file: str, suffix: str) -> Path:
     return Path(file).with_suffix(suffix)
 
@@ -312,6 +322,81 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_demo(args: argparse.Namespace) -> int:
+    from .demo import run_demo
+
+    run = run_demo(args.out_dir, overwrite=args.overwrite)
+    d = run.directory
+    _note(outputs={k: str(v) for k, v in run.files.items()})
+    _emit(f"CleanFrame demo → {d}\n")
+
+    _emit("1) Profile a messy file (no changes made)")
+    _emit(f"   $ cleanframe report {d / 'messy_customers.csv'}")
+    q = run.quality
+    if q is not None:
+        _note(quality={"score": q.score, "grade": q.grade, "label": q.label})
+        _emit(f"   Quality score {q.score}/100 (grade {q.grade} — {q.label})")
+    for column, kind, message in run.issues[:6]:
+        where = f"{column}: " if column else ""
+        _emit(f"   • {where}{message}  [{kind}]")
+    _emit(f"   ✓ {run.files['report']}\n")
+
+    s = run.clean_summary
+    _emit("2) Clean it into a reviewable recipe (rules only, no API key)")
+    _emit(
+        f"   $ cleanframe clean {d / 'messy_customers.csv'} --schema {d / 'customer.schema.yaml'} "
+        f"--recipe {run.files['recipe']} --out {run.files['clean']} "
+        f"--code {run.files['code']} --report {run.files['diff']}"
+    )
+    _emit(
+        f"   {s.get('changed_cells', 0)} cell(s) changed in {s.get('changed_columns', 0)} column(s), "
+        f"{s.get('rows_dropped', 0)} duplicate row(s) dropped, {run.quarantined} row(s) quarantined "
+        "(held with a reason, never deleted)"
+    )
+    _note(diff=s, rows_quarantined=run.quarantined)
+    for key in ("recipe", "clean", "code", "diff"):
+        _emit(f"   ✓ {run.files[key]}")
+    _emit("")
+
+    _emit("3) Next month's file arrives with a renamed column and a new date format")
+    _emit(
+        f"   $ cleanframe apply {d / 'next_month_customers.csv'} "
+        f"--recipe {d / 'customer.recipe.yaml'}"
+    )
+    for line in run.drift_text.splitlines():
+        _emit(f"   {line}")
+    _emit("   → CleanFrame stopped instead of silently writing wrong data.\n")
+
+    _emit("4) Review a patch for the drift, then replay with zero AI calls")
+    _emit(
+        f"   $ cleanframe suggest {d / 'next_month_customers.csv'} "
+        f"--recipe {d / 'customer.recipe.yaml'} --update"
+    )
+    for note in run.patch_notes:
+        _emit(f"   • {note}")
+    _emit(f"   ✓ {run.files['patched']}  (replays cleanly: {run.replay_rows} row(s))\n")
+
+    _emit("Next: open the HTML reports, read the recipe YAML, and try your own file:")
+    _emit("   cleanframe report your.csv && cleanframe clean your.csv --out-dir cleaned/")
+    _emit("   Docs: https://github.com/inboxpraveen/Cleanframe/wiki")
+    if args.open:
+        import webbrowser
+
+        webbrowser.open(Path(run.files["report"]).resolve().as_uri())
+    return EXIT_OK
+
+
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    from .mcp_server import serve
+
+    if getattr(args, "json", False):
+        raise CleanFrameError(
+            "--json is not supported by `cleanframe mcp`: stdout is the MCP protocol channel."
+        )
+    # _dispatch already imported --plugin modules and, unless --no-plugins, discovered the rest.
+    return serve(discover=False)
+
+
 def _is_multisheet_workbook(file: str, selection: dict) -> bool:
     """A multi-sheet .xlsx with no explicit --sheet -> clean every tab (workbook mode)."""
     path = Path(file)
@@ -385,6 +470,11 @@ def _cmd_clean(args: argparse.Namespace) -> int:
 
     selection = _selection_kwargs(args)
     workbook = _is_multisheet_workbook(args.file, selection)
+    if workbook and args.decide:
+        raise CleanFrameError(
+            "--decide is not supported for multi-sheet workbooks yet; pass --sheet NAME "
+            "to clean one sheet with decisions."
+        )
     if args.out_dir:
         _out_dir_targets(args, workbook=workbook)
     if workbook:
@@ -399,6 +489,9 @@ def _cmd_clean(args: argparse.Namespace) -> int:
         max_tokens_budget=args.max_tokens,
         llm_exposure=args.llm_exposure,
         llm_fallback=not args.no_llm_fallback,
+        decide=args.decide,
+        decision_threshold=args.decision_threshold,
+        max_decisions=args.max_decisions,
         **selection,
         **_read_kwargs(args),
     )
@@ -425,6 +518,8 @@ def _cmd_clean(args: argparse.Namespace) -> int:
     if result.has_quarantine and args.quarantine:
         write_frame(result.quarantine, args.quarantine, source=args.file, overwrite=args.overwrite)
         _emit(f"✓ Quarantine → {args.quarantine}  ({len(result.quarantine)} rows)")
+    if result.decisions is not None:
+        _print_decisions(result.decisions)
 
     _emit("")
     result.diff.show(stream=sys.stderr if _JSON_MODE else None)
@@ -435,6 +530,33 @@ def _cmd_clean(args: argparse.Namespace) -> int:
         )
     _print_log(args, result.log)
     return EXIT_OK
+
+
+def _print_decisions(log) -> None:  # noqa: ANN001 - decisions.DecisionLog, imported lazily
+    summary = log.summary()
+    _note(decisions=summary)
+    calibrated = "" if log.calibrated else ", uncalibrated"
+    _emit(
+        f"✓ Decisions → {summary['asked']} asked ({log.model}{calibrated}) · "
+        f"{summary['applied']} applied · {summary['suggested']} suggested · "
+        f"{summary['vetoed']} vetoed (bar p ≥ {summary['threshold']})"
+    )
+    shown = [r for r in log.records if r.outcome in ("applied", "suggested", "vetoed")]
+    for record in shown[:10]:
+        where = f"{record.column}: " if record.column else ""
+        _emit(
+            f"    {record.outcome:<9} {where}{record.subject} → {record.answer}  "
+            f"(p={record.probability:.2f})"
+        )
+    if len(shown) > 10:
+        _emit(f"    … {len(shown) - 10} more in the recipe's meta.decisions")
+    if log.error:
+        _emit(
+            f"    ⚠ the decision backend failed ({log.error}); unasked questions fell back to "
+            "the rules plan. Re-run with --no-llm-fallback to make this an error."
+        )
+    for note in log.notes:
+        _emit(f"    note: {note}")
 
 
 def _drift_stop(args: argparse.Namespace, exc: DriftError, action: str) -> int:
@@ -686,6 +808,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    p = sub.add_parser(
+        "demo",
+        help="run a guided demo on bundled sample data (no files or API key needed)",
+        parents=[common],
+    )
+    p.add_argument(
+        "--out-dir", default="cleanframe-demo",
+        help="directory for the sample files and outputs (default: ./cleanframe-demo)",
+    )
+    p.add_argument("--overwrite", action="store_true", help="replace an earlier demo's files")
+    p.add_argument("--open", action="store_true", help="open the profiling report in a browser")
+    p.set_defaults(func=_cmd_demo)
+
+    sub.add_parser(
+        "mcp",
+        help="serve CleanFrame's agent tools over MCP stdio (needs the [mcp] extra)",
+        parents=[common],
+    ).set_defaults(func=_cmd_mcp)
+
     p = sub.add_parser("report", help="write an HTML profiling report", parents=[common])
     p.add_argument("file")
     p.add_argument("--out", "-o", help="output .html (default: <file>.report.html)")
@@ -722,7 +863,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-llm-fallback",
         action="store_true",
-        help="fail instead of degrading to the rules planner when an LLM call fails",
+        help="fail instead of degrading to the rules planner when an LLM or decision call fails",
+    )
+    p.add_argument(
+        "--decide",
+        metavar="SPEC",
+        help="decision backend for judgment calls (aliases, typo merges, null tokens, schema "
+        "matches), e.g. typesafe/jev-latest, openrouter/typesafe/jev-1.14, systemone/MODEL, "
+        "rules, or any --llm spec; category questions need --llm-exposure sample",
+    )
+    p.add_argument(
+        "--decision-threshold",
+        type=_probability,
+        default=0.9,
+        help="probability a decision needs before it changes data (default: 0.9)",
+    )
+    p.add_argument(
+        "--max-decisions",
+        type=_nonneg_int,
+        default=200,
+        help="most questions to ask the decision backend (default: 200)",
     )
     p.add_argument("--mode", default="review", choices=["review", "auto", "strict"], help=_MODE_HELP)
     p.add_argument(
