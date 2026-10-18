@@ -99,3 +99,6 @@ examples/messy_customers.recipe.yaml
 examples/messy_customers.schema.yaml
 !examples/customer.recipe.yaml
 !examples/customer.schema.yaml
+
+# `cleanframe demo` output when run inside the repository
+/cleanframe-demo/

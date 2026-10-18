@@ -74,7 +74,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Ruff
-        run: ruff check cleanframe tests
+        run: ruff check cleanframe tests action bench playground scripts
       - name: Mypy
         run: mypy
 
@@ -93,6 +93,81 @@ jobs:
           pip install "pandas==1.5.3" "numpy==1.23.5" "PyYAML==6.0" "Jinja2==3.0.3" \
                       "python-dateutil==2.8.2" "openpyxl==3.0.10" pytest
           pip install -e . --no-deps
+      - run: pytest -q
+
+  # The composite action (action/) on real runners: a clean replay must pass and a
+  # drifted copy must stop with exit 3. Local tests cannot cover setup-python, the
+  # runner's action cache or composite outputs after a failed step.
+  action-smoke:
+    name: action smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Replay the example (must pass)
+        id: ok
+        uses: ./action
+        with:
+          files: examples/messy_customers.csv
+          recipe: examples/customer.recipe.yaml
+          out-dir: ci-out
+      - name: Check the passing run
+        shell: bash
+        env:
+          EXIT_CODE: ${{ steps.ok.outputs.exit-code }}
+          DRIFT: ${{ steps.ok.outputs.drift }}
+          QUARANTINED: ${{ steps.ok.outputs.quarantined }}
+        run: |
+          set -euo pipefail
+          test "$EXIT_CODE" = 0 && test "$DRIFT" = false && test "$QUARANTINED" = 1
+          test -s ci-out/messy_customers.clean.csv
+      - name: Make a drifted copy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-drift
+          sed '1s/Amount/Total Amount/' examples/messy_customers.csv > ci-drift/feb.csv
+      - name: Replay the drifted copy (must stop with exit 3)
+        id: drift
+        continue-on-error: true
+        uses: ./action
+        with:
+          files: ci-drift/*.csv
+          recipe: examples/customer.recipe.yaml
+          python-version: "3.10"
+      - name: Check the drift run
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.drift.outcome }}
+          EXIT_CODE: ${{ steps.drift.outputs.exit-code }}
+          DRIFT: ${{ steps.drift.outputs.drift }}
+          FAILED: ${{ steps.drift.outputs.failed-files }}
+        run: |
+          set -euo pipefail
+          echo "outcome=$OUTCOME exit-code=$EXIT_CODE drift=$DRIFT failed-files=$FAILED"
+          test "$OUTCOME" = failure
+          test "$EXIT_CODE" = 3 && test "$DRIFT" = true && test "$FAILED" = 1
+
+  # pandas 3 (released 2026-01) reads text as dtype "str" and stores missing text as
+  # NaN; code that only checked object dtype silently no-op'd there. Not advisory.
+  pandas-3:
+    name: pandas 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install --upgrade "pandas>=3,<4"
+          python -c "import pandas; assert pandas.__version__.startswith('3'), pandas.__version__"
       - run: pytest -q
 
   pandas-prerelease:

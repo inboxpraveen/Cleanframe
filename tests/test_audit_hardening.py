@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -174,6 +175,49 @@ def test_codegen_fill_na_strategies_match_executor():
         exec(compile(generate_code(recipe), "g.py", "exec"), ns)
         gen = ns["clean"](df.copy()).reset_index(drop=True)
         pd.testing.assert_frame_equal(gen, ref)
+
+
+@pytest.mark.parametrize(
+    ("values", "dtype", "params", "expected"),
+    [
+        ([1.0, None, 3.0], "float64", {"strategy": "empty"}, [1.0, "", 3.0]),
+        ([1.0, None, 3.0], "float64", {"value": "unknown"}, [1.0, "unknown", 3.0]),
+        ([1.0, None, 3.0], "float64", {"strategy": "zero"}, [1.0, 0.0, 3.0]),
+        (["a", None, "c"], None, {"strategy": "zero"}, ["a", 0, "c"]),
+        (["a", None, "c"], "string", {"strategy": "zero"}, ["a", 0, "c"]),
+        (["a", None, "c"], "string", {"strategy": "empty"}, ["a", "", "c"]),
+        (
+            ["2020-01-01", None],
+            "datetime64[ns]",
+            {"value": "unknown"},
+            [pd.Timestamp("2020-01-01"), "unknown"],
+        ),
+        (
+            ["2020-01-01", None],
+            "datetime64[ns]",
+            {"value": "2020-01-05"},
+            [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-05")],
+        ),
+    ],
+)
+def test_fill_na_value_the_dtype_cannot_hold_does_not_warn(values, dtype, params, expected):
+    # pandas 3.1 deprecates fillna turning a column into object to store a value its dtype
+    # cannot hold ('' into float, 0 into text) and pandas 4 raises; the op and the exported
+    # code cast explicitly instead, with the same result.
+    from cleanframe.codegen import generate_code
+    from cleanframe.executor import execute
+
+    df = pd.DataFrame({"c": pd.Series(values, dtype=dtype)})
+    recipe = Recipe.from_dict({"version": 1, "columns": {"c": {"ops": [{"fill_na": params}]}}})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        warnings.simplefilter("error", FutureWarning)
+        ref = execute(recipe, df, mode="auto").dataframe.reset_index(drop=True)
+        ns: dict = {}
+        exec(compile(generate_code(recipe), "g.py", "exec"), ns)
+        gen = ns["clean"](df.copy()).reset_index(drop=True)
+    assert ref["c"].tolist() == expected
+    pd.testing.assert_frame_equal(gen, ref)
 
 
 def test_codegen_normalize_unit_emit_column():

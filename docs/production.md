@@ -243,6 +243,9 @@ so run summaries land in your normal log pipeline rather than only on stderr.
 
 Commit recipes next to dbt/Airflow code. Review recipe diffs in PRs like code.
 
+On GitHub, the [GitHub Action](github-action.md) wraps this pattern: it replays every matching file,
+fails the check on drift or a failing validation, and writes a per-file job-summary table.
+
 ## What CleanFrame will not do
 
 - Silently fill missing values (`fill_na` is human-authored only)

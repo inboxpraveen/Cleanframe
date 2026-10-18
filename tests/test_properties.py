@@ -206,7 +206,9 @@ def test_streaming_equals_whole_frame_replay(tmp_path_factory, cells, chunk):
     # The streamed CSV is written through the formula-injection guard; so is the reference.
     from cleanframe._util import sanitize_dataframe_for_csv
 
+    # Missing cells are written as empty fields. Blank them explicitly: pandas 3's
+    # ``astype(str)`` keeps NaN as NaN, where pandas 2 wrote the text "nan".
     expected = sanitize_dataframe_for_csv(
-        whole.astype(str).replace({"nan": ""}).reset_index(drop=True)
+        whole.astype(object).where(whole.notna(), "").astype(str).reset_index(drop=True)
     )
     assert streamed.reset_index(drop=True).equals(expected)

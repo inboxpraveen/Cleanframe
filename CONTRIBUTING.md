@@ -27,6 +27,17 @@ than no change at all. The rules below exist to protect it.
    raw cell values by default, and its output must go through `Recipe.from_dict`
    (which validates it) — never straight to the executor.
 
+   The same holds for **decision models** (`decisions.py`, `clean(decide=...)`): they
+   answer typed questions while planning, and accepted answers become ordinary recipe
+   ops, so replay never calls them. Under the default `metadata` exposure a question may
+   carry column names, types, value *patterns* and — the one exception — a null token,
+   because the token always comes from CleanFrame's fixed vocabulary
+   (`ops.DEFAULT_NA_TOKENS`), never from free-form data. Category values are sent only
+   under `sample`. An answer that *changes* data needs `p ≥ max(mode threshold,
+   decision_threshold)`; below that it is a recorded suggestion, never executed.
+   Questions must be built from sorted distinct values so row order cannot change them
+   (`tests/test_decisions.py` checks this).
+
 3. **Recipes round-trip losslessly and idempotently.** `Recipe.from_yaml(r.to_yaml())`
    must equal `r`, and applying `to_yaml` twice must be byte-identical. If you add
    an op with parameters, you must add a `coerce`/`compact` pair such that
@@ -47,7 +58,9 @@ than no change at all. The rules below exist to protect it.
    1.5 g?) or malformed for the declared convention (`2,5` under `thousands=","`), the
    result is a counted, warned null, never a plausible-looking number. Wrong numbers
    are worse than missing ones. Likewise a clustering/merge rule must never fold together
-   values that differ in sign, decimal or grouping (`-300`/`300`).
+   values that differ in sign, decimal or grouping (`-300`/`300`), and a *typo* merge must
+   be a typo: one edit apart, so look-alike words such as `Austria`/`Australia` or
+   `Hypothyroidism`/`Hyperthyroidism` stay apart.
 
 5. **Every changed cell is tracked.** The executor assigns a stable row id and
    tracks column lineage so `CellDiff` can attribute every change. If you add a
@@ -92,6 +105,9 @@ DataFrame ─▶ profile.py ─▶ detectors/ ─▶ planner.py ─▶ Recipe (r
   unknown check name at load time. It lives apart from `validate.py` so `recipe.py`
   can use the guard without an import cycle.
 - **`llm.py`** — optional; writes a recipe from metadata only.
+- **`decisions.py`** — optional; asks a decision model (Jev, an open System One model,
+  or an LLM via an adapter) the judgment calls rules leave open, and turns confident
+  answers into ordinary proposals for the planner.
 
 The dependency direction is strictly downward (detectors import ops, planner
 imports detectors, etc.). Don't introduce an upward import — it will create a

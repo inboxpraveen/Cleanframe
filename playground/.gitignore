@@ -1,0 +1,5 @@
+# Built by `python playground/dev_server.py` (and by the Pages workflow) - never committed.
+wheels/
+# The Node smoke test's local install (tests/package.json pins the version).
+tests/node_modules/
+tests/package-lock.json

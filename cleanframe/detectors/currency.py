@@ -145,6 +145,8 @@ def detect_currency(series: pd.Series, ctx: DetectorContext) -> Issues:
     evidence = {
         "currencies": sorted(codes),
         "unparsed": unparsed,
+        # Every value is money stored as text, and every one is rewritten by the fix.
+        "affected": int(cp.count),
         "examples": _cap_examples(values),
     }
     if convention:

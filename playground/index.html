@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Privacy, enforced: code may load only from this site and the pinned Pyodide
+  directory on jsDelivr. 'wasm-unsafe-eval' lets WebAssembly compile; there is no
+  'unsafe-eval'. The worker is started from a blob: URL so it inherits this
+  policy. style-src allows inline styles only because the CleanFrame HTML reports
+  (opened as blob: pages, which inherit this policy) carry their CSS inline.
+  Keep the version in sync with worker.js.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net/pyodide/v314.0.7/full/; worker-src 'self' blob:; connect-src 'self' https://cdn.jsdelivr.net/pyodide/v314.0.7/full/; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<title>CleanFrame Playground: how messy is your data?</title>
+<meta name="description" content="Drop a CSV and get a Mess Score, the problems CleanFrame finds, a replayable YAML recipe and the cleaned file. Python runs in your browser; your data never leaves your device.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f7fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#090d18" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:title" content="How messy is your data? CleanFrame Playground">
+<meta property="og:description" content="Get a Mess Score, a replayable cleaning recipe and the cleaned CSV. Runs entirely in your browser; nothing is uploaded.">
+<meta property="og:url" content="https://inboxpraveen.github.io/Cleanframe/">
+<meta property="og:image" content="https://inboxpraveen.github.io/Cleanframe/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="https://github.com/inboxpraveen/Cleanframe" aria-label="CleanFrame on GitHub">
+      <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
+        <defs><linearGradient id="lg-top" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#06b6d4"/><stop offset=".5" stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+        <path d="M5 21V5h16M43 5h16v16M59 43v16H43M21 59H5V43" fill="none" stroke="url(#lg-top)" stroke-width="6"/>
+        <rect class="sq-c" x="15" y="15" width="10" height="10"/><rect class="sq-s" x="27" y="15" width="10" height="10"/><rect class="sq-c" x="39" y="15" width="10" height="10"/>
+        <rect class="sq-s" x="15" y="27" width="10" height="10"/><rect class="sq-c" x="27" y="27" width="10" height="10"/><rect class="sq-s" x="39" y="27" width="10" height="10"/>
+        <rect class="sq-c" x="15" y="39" width="10" height="10"/><rect class="sq-s" x="27" y="39" width="10" height="10"/><rect class="sq-c" x="39" y="39" width="10" height="10"/>
+      </svg>
+      CleanFrame <span class="tag">Playground</span>
+    </a>
+    <nav class="topnav" aria-label="Project links">
+      <a href="#how" class="optional">How it works</a>
+      <a href="#privacy">Privacy</a>
+      <a href="https://github.com/inboxpraveen/Cleanframe/wiki" class="optional">Docs</a>
+      <a href="https://github.com/inboxpraveen/Cleanframe">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="wrap">
+      <div class="intro">
+        <p class="eyebrow">Free, private, no sign-up</p>
+        <h1 id="hero-title">How <span class="messy"><span class="sr-only">messy</span><span aria-hidden="true">m</span><span aria-hidden="true">e</span><span aria-hidden="true">s</span><span aria-hidden="true">s</span><span aria-hidden="true">y</span></span> is your data?</h1>
+        <p class="lede">Drop a CSV and get a <b>Mess Score</b>, every problem CleanFrame finds, a reviewable YAML recipe and the cleaned file. It is computed by Python running inside this tab, so <b>your data never leaves your device</b>.</p>
+      </div>
+
+      <div class="drop-col">
+        <div class="dropzone" id="dropzone">
+          <span class="corner c-tl" aria-hidden="true"></span><span class="corner c-tr" aria-hidden="true"></span>
+          <span class="corner c-bl" aria-hidden="true"></span><span class="corner c-br" aria-hidden="true"></span>
+          <svg class="dz-icon" viewBox="0 0 48 48" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M14 33H11a8 8 0 0 1-.6-16A11 11 0 0 1 31.6 13.6 9.5 9.5 0 1 1 36 33h-2M24 22v18M17.5 28.5 24 22l6.5 6.5"/></svg>
+          <p class="dz-title" id="dz-title">Drop a CSV file here</p>
+          <p class="dz-sub" id="dz-sub">or paste cells copied from a spreadsheet</p>
+          <div class="dz-actions">
+            <button type="button" class="btn primary" id="pick" aria-describedby="dz-hint">Choose a file</button>
+            <button type="button" class="btn ghost" id="sample">Try the sample</button>
+          </div>
+          <p class="dz-hint" id="dz-hint">CSV, TSV or TXT up to 20 MB <span id="xlsx-hint">· Excel .xlsx up to 5 MB</span></p>
+          <label class="sr-only" for="file">Data file to analyze</label>
+          <input class="sr-only" type="file" id="file" tabindex="-1" accept=".csv,.tsv,.txt,.tab,.dat,.xlsx,.xlsm,text/csv,text/tab-separated-values,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+          <div class="busy-overlay" id="busy" hidden>
+            <div class="spinner" aria-hidden="true"></div>
+            <div class="big" id="busy-title">Analyzing…</div>
+            <div class="small" id="busy-detail">Python is running in this tab.</div>
+          </div>
+        </div>
+
+        <div class="runtime" id="runtime" role="status" aria-live="polite">
+          <ol class="steps" id="steps">
+            <li data-step="runtime">Python runtime</li>
+            <li data-step="packages">pandas</li>
+            <li data-step="cleanframe">CleanFrame</li>
+          </ol>
+          <div class="bar" aria-hidden="true"><span id="runtime-bar"></span></div>
+          <p class="note" id="runtime-note">Starting Python takes a few seconds to half a minute, depending on your device. The first visit also downloads about 14 MB (CPython, pandas and NumPy compiled to WebAssembly) from cdn.jsdelivr.net; your browser caches it after that.</p>
+          <div class="ready-line"><span class="ready-dot" aria-hidden="true"></span><span id="ready-text">Ready.</span></div>
+        </div>
+
+        <div class="alert" id="alert" role="alert" hidden>
+          <strong id="alert-title">That file could not be analyzed</strong>
+          <p id="alert-text"></p>
+          <details id="alert-details" hidden><summary>Technical details</summary><pre id="alert-pre"></pre></details>
+        </div>
+      </div>
+
+      <ul class="trust">
+        <li><svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" d="M10 1.5l7 3v5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9v-5l7-3zm3.3 5.8L8.9 11.7 6.7 9.5 5.6 10.6l3.3 3.3 5.5-5.5-1.1-1.1z"/></svg><span>Nothing is uploaded. A Content-Security-Policy blocks every connection except this site and the Python runtime's CDN.</span></li>
+        <li><svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" d="M10 1.5l7 3v5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9v-5l7-3zm3.3 5.8L8.9 11.7 6.7 9.5 5.6 10.6l3.3 3.3 5.5-5.5-1.1-1.1z"/></svg><span>No account, cookies, analytics or trackers.</span></li>
+        <li><svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" d="M10 1.5l7 3v5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9v-5l7-3zm3.3 5.8L8.9 11.7 6.7 9.5 5.6 10.6l3.3 3.3 5.5-5.5-1.1-1.1z"/></svg><span>The recipe you download replays anywhere with <code>pip install cleanframe-engine</code>.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="results" id="results" aria-labelledby="results-title" hidden>
+    <div class="wrap">
+      <div class="results-head">
+        <h2 id="results-title" tabindex="-1">Results for <span id="r-file"></span></h2>
+        <span class="meta" id="r-meta"></span>
+        <button type="button" class="btn ghost small" id="again">Analyze another file</button>
+      </div>
+
+      <div class="grid">
+        <div class="main-col">
+          <article class="panel score" id="score-panel" aria-label="Mess Score">
+            <div>
+              <div class="score-label">Mess Score</div>
+              <div class="score-value"><span class="n" id="mess">0</span><span class="of">/100</span></div>
+              <div class="band" id="band"></div>
+            </div>
+            <div class="meter-wrap">
+              <div class="meter" id="meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-label="Mess Score"><span id="meter-fill"></span></div>
+              <div class="meter-scale" aria-hidden="true"><span>0 · spotless</span><span>100 · chaos</span></div>
+              <dl class="stats">
+                <div><dt>Quality grade</dt><dd id="st-grade"></dd></div>
+                <div><dt>Problems</dt><dd id="st-issues"></dd></div>
+                <div><dt>Cells changed</dt><dd id="st-cells"></dd></div>
+                <div><dt>Rows removed</dt><dd id="st-quarantine"></dd></div>
+              </dl>
+              <details class="how" id="how">
+                <summary>How is this scored?</summary>
+                <p>The Mess Score is <b>100 minus CleanFrame's quality score</b>, the same deterministic number <code>cleanframe report</code> prints. Each problem adds a penalty of <i>severity weight × share of rows affected</i> (error 1.0, warning 0.4, info 0.1; a problem without a count assumes 25% of rows). Exact duplicate rows add 0.5 × their share. The total is averaged over the columns:</p>
+                <div class="formula" id="formula"></div>
+                <p>Detectors inspect up to the first 50,000 non-empty values of each column. It is a heuristic for "is this file getting better?", not a benchmark.</p>
+              </details>
+            </div>
+          </article>
+
+          <ul class="chips" id="chips" aria-label="Problems found"></ul>
+
+          <div class="downloads" id="downloads" aria-label="Downloads"></div>
+
+          <ul class="notes" id="notes" aria-label="Notes from the reader" hidden></ul>
+
+          <div class="panel tabs">
+            <div class="tablist" role="tablist" aria-label="Result details">
+              <button type="button" role="tab" class="tab" id="tab-problems" aria-controls="panel-problems" aria-selected="true">Problems</button>
+              <button type="button" role="tab" class="tab" id="tab-changes" aria-controls="panel-changes" aria-selected="false" tabindex="-1">Changes</button>
+              <button type="button" role="tab" class="tab" id="tab-recipe" aria-controls="panel-recipe" aria-selected="false" tabindex="-1">Recipe</button>
+              <button type="button" role="tab" class="tab" id="tab-code" aria-controls="panel-code" aria-selected="false" tabindex="-1">Code</button>
+              <button type="button" role="tab" class="tab" id="tab-report" aria-controls="panel-report" aria-selected="false" tabindex="-1">Report</button>
+            </div>
+            <div class="tabpanel" role="tabpanel" id="panel-problems" aria-labelledby="tab-problems" tabindex="0">
+              <div class="colcards" id="colcards"></div>
+            </div>
+            <div class="tabpanel" role="tabpanel" id="panel-changes" aria-labelledby="tab-changes" tabindex="0" hidden>
+              <div class="panel-tools"><p id="changes-summary"></p></div>
+              <p class="renames" id="renames" hidden></p>
+              <div class="table-wrap">
+                <table class="diff" id="diff-table">
+                  <caption class="sr-only">Example cell changes, grouped by output column</caption>
+                  <thead><tr><th scope="col">Row</th><th scope="col">Before</th><th scope="col"><span class="sr-only">becomes</span></th><th scope="col">After</th></tr></thead>
+                </table>
+              </div>
+            </div>
+            <div class="tabpanel" role="tabpanel" id="panel-recipe" aria-labelledby="tab-recipe" tabindex="0" hidden>
+              <div class="panel-tools">
+                <p>The durable artifact: plain YAML you can review, edit and commit. It replays deterministically with no AI involved.</p>
+                <button type="button" class="btn ghost small" data-copy="recipe">Copy YAML</button>
+              </div>
+              <pre class="code" id="recipe-code" tabindex="0" aria-label="Recipe YAML"></pre>
+            </div>
+            <div class="tabpanel" role="tabpanel" id="panel-code" aria-labelledby="tab-code" tabindex="0" hidden>
+              <div class="panel-tools">
+                <p>The same recipe as standalone pandas code. Drop it into any pipeline; it does not need CleanFrame installed.</p>
+                <button type="button" class="btn ghost small" data-copy="code">Copy code</button>
+              </div>
+              <pre class="code" id="py-code" tabindex="0" aria-label="Generated pandas code"></pre>
+            </div>
+            <div class="tabpanel" role="tabpanel" id="panel-report" aria-labelledby="tab-report" tabindex="0" hidden>
+              <div class="report-actions">
+                <button type="button" class="btn primary" id="open-report">Open the diagnosis report</button>
+                <button type="button" class="btn ghost" id="open-clean-report">Open the cleaning report</button>
+              </div>
+              <p>The same self-contained HTML reports <code>cleanframe report</code> and <code>cleanframe clean</code> write. They open as local pages in a new tab; nothing is uploaded.</p>
+            </div>
+          </div>
+        </div>
+
+        <aside class="side" aria-label="Share and next steps">
+          <section class="panel share" aria-labelledby="share-title">
+            <h3 id="share-title">Share your Mess Score</h3>
+            <p class="sub">A card with counts only.</p>
+            <canvas class="card-preview" id="card" width="1200" height="630" role="img" aria-label="Share card preview"></canvas>
+            <div class="actions">
+              <button type="button" class="btn ghost small" id="card-download">Download PNG</button>
+              <button type="button" class="btn ghost small" id="card-copy" hidden>Copy image</button>
+              <a class="btn primary small wide" id="share-x" target="_blank" rel="noopener noreferrer" href="https://x.com/">Post on X</a>
+              <button type="button" class="btn ghost small wide" id="card-share" hidden>Share…</button>
+            </div>
+            <p class="privacy">The card and post text contain only the score and counts: never column names, cell values or your file name.</p>
+          </section>
+
+          <section class="panel next" aria-labelledby="next-title">
+            <h3 id="next-title">Next step: replay it forever</h3>
+            <p>Save the recipe, then clean every future export the same way:</p>
+            <ol>
+              <li><code class="cmd" id="cmd-install">pip install cleanframe-engine</code><button type="button" class="icon-btn" data-copy="cmd-install" aria-label="Copy the install command"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M5 2.5A1.5 1.5 0 0 1 6.5 1h6A1.5 1.5 0 0 1 14 2.5v8a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 5 10.5v-8zm1.5 0v8h6v-8h-6zM2 5.5A1.5 1.5 0 0 1 3.5 4v8.5h6.5V14H3.5A1.5 1.5 0 0 1 2 12.5v-7z"/></svg></button></li>
+              <li><code class="cmd" id="cmd-apply">cleanframe apply new.csv --recipe recipe.yaml</code><button type="button" class="icon-btn" data-copy="cmd-apply" aria-label="Copy the apply command"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M5 2.5A1.5 1.5 0 0 1 6.5 1h6A1.5 1.5 0 0 1 14 2.5v8a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 5 10.5v-8zm1.5 0v8h6v-8h-6zM2 5.5A1.5 1.5 0 0 1 3.5 4v8.5h6.5V14H3.5A1.5 1.5 0 0 1 2 12.5v-7z"/></svg></button></li>
+            </ol>
+            <p>Same input, same output, every run. If next month's file drifts (a renamed column, a new date format), <code>apply</code> stops and says why instead of guessing.</p>
+            <p><a href="https://github.com/inboxpraveen/Cleanframe#readme">Read the docs</a> · <a href="https://github.com/inboxpraveen/Cleanframe">Star on GitHub</a></p>
+          </section>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="how" aria-labelledby="how-title">
+    <div class="wrap">
+      <h2 id="how-title">How it works</h2>
+      <p class="intro">CleanFrame is an open-source Python library. This page runs the real thing, the same code as <code>pip install cleanframe-engine</code>, with the deterministic rules planner (no AI, no API keys).</p>
+      <div class="cards3">
+        <div class="card"><div class="num">01 · Detect</div><h3>Find the mess</h3><p>Thirteen detectors look for mixed date formats, misspelled categories, money stored as text, stray whitespace, disguised nulls, invalid emails and phones, duplicates and more.</p></div>
+        <div class="card"><div class="num">02 · Plan</div><h3>Write a recipe</h3><p>Every fix becomes a line of YAML: readable, diffable, yours to edit and commit. Problems that need a human are flagged, not silently "fixed".</p></div>
+        <div class="card"><div class="num">03 · Replay</div><h3>Run it forever</h3><p><code>cleanframe apply</code> replays the recipe on next month's file with plain pandas, and stops on schema drift. Or export the generated pandas code and keep no dependency at all.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="privacy" aria-labelledby="privacy-title">
+    <div class="wrap privacy-grid">
+      <div>
+        <h2 id="privacy-title">Your data stays on this device</h2>
+        <p class="intro">Not a promise in a privacy policy: it is how the page is built.</p>
+        <ul class="checklist">
+          <li><svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" d="M10 1.5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17zm3.4 5.3L8.8 11.4 6.6 9.2l-1.1 1.1 3.3 3.3 5.7-5.7-1.1-1.1z"/></svg><span><b>Python runs in this tab.</b> CPython, pandas and CleanFrame are compiled to WebAssembly (Pyodide) and run in a background thread. Your file is read into that thread's memory and nowhere else.</span></li>
+          <li><svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" d="M10 1.5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17zm3.4 5.3L8.8 11.4 6.6 9.2l-1.1 1.1 3.3 3.3 5.7-5.7-1.1-1.1z"/></svg><span><b>Two origins, enforced.</b> A Content-Security-Policy lets the page fetch only from this site and the pinned Pyodide directory on jsDelivr. Any other connection, including one that tried to send your data away, is blocked by the browser.</span></li>
+          <li><svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" d="M10 1.5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17zm3.4 5.3L8.8 11.4 6.6 9.2l-1.1 1.1 3.3 3.3 5.7-5.7-1.1-1.1z"/></svg><span><b>No tracking.</b> No analytics, cookies, fonts or third-party scripts.</span></li>
+          <li><svg viewBox="0 0 20 20" aria-hidden="true"><path fill="currentColor" d="M10 1.5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17zm3.4 5.3L8.8 11.4 6.6 9.2l-1.1 1.1 3.3 3.3 5.7-5.7-1.1-1.1z"/></svg><span><b>Check it yourself.</b> Open your browser's developer tools, go to Network, and drop a file: no request carries your data.</span></li>
+        </ul>
+      </div>
+      <pre class="origins" aria-label="Everything this page loads">Everything this page loads:
+
+this site
+  index.html  app.js  worker.js
+  style.css   favicon.svg
+  app.py                 the Python glue
+  wheels/                CleanFrame, built from main
+  sample/                the sample CSV (on request)
+
+cdn.jsdelivr.net/pyodide/v314.0.7/full/
+  the Python runtime, pandas, NumPy,
+  PyYAML, Jinja2, python-dateutil</pre>
+    </div>
+  </section>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span>CleanFrame is open source under the Apache-2.0 license. <a href="https://github.com/inboxpraveen/Cleanframe">GitHub</a> · <a href="https://github.com/inboxpraveen/Cleanframe/wiki">Docs</a> · <a href="https://github.com/inboxpraveen/Cleanframe/issues">Report a problem</a></span>
+    <span id="versions">Python runs in your browser via Pyodide.</span>
+  </div>
+</footer>
+</body>
+</html>

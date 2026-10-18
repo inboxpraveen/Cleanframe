@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -29,6 +30,9 @@ from .quality import QualityScore
 from .recipe import Recipe
 from .report import render_clean_report, render_profile_report
 from .validate import ValidationResult
+
+if TYPE_CHECKING:  # the decisions module is only imported when decide= is used
+    from .decisions import DecisionLog
 
 
 class CodeArtifact:
@@ -83,6 +87,8 @@ class CleanResult:
     source: str | None = None
     log: list[str] = field(default_factory=list)
     drift: DriftReport | None = None
+    #: What the decision backend was asked and what was applied (``clean(decide=...)``).
+    decisions: DecisionLog | None = None
 
     @property
     def code(self) -> CodeArtifact:
@@ -111,6 +117,8 @@ class CleanResult:
         s["quarantined"] = int(len(self.quarantine))
         if self.quality is not None:
             s["quality_before"] = self.quality.score
+        if self.decisions is not None:
+            s["decisions"] = self.decisions.summary()
         return s
 
     def save_all(self, prefix: str | Path) -> dict[str, Path]:

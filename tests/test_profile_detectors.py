@@ -134,3 +134,64 @@ def test_fuzzy_duplicates_reported_with_merge_proposal():
     assert "proposal" in fuzzy.evidence["pairs"][0]
     assert not fuzzy.has_fix or not fuzzy.proposal.ops  # never auto-merged
 
+
+
+def test_fuzzy_category_merge_needs_a_typo_not_just_similar_letters():
+    # "Austria" scores 0.875 against "Australia" (above the 0.86 bar) and is rare
+    # enough to fold, yet it is a different country two edits away. A typo is one
+    # edit (two for long values), so only the real typos merge.
+    import cleanframe as cf
+
+    df = pd.DataFrame(
+        {"country": ["Australia"] * 10 + ["Austria"] * 3 + ["Bangalore"] * 10 + ["Banglore"] * 2}
+    )
+    out = cf.clean(df).dataframe["country"]
+    assert set(out) == {"Australia", "Austria", "Bangalore"}
+
+
+def test_quality_score_counts_rows_a_format_fix_rewrites():
+    # A column in three date formats, or money stored as text, used to add no penalty:
+    # the scorer read their `unparsed: 0` (every value parses) as "no rows affected".
+    from cleanframe.quality import _affected_fraction, quality_score
+
+    df = pd.DataFrame(
+        {
+            "signup": ["31/01/2024", "2024-02-15", "1 Jan 2024", "15/03/2024"] * 3,
+            "amount": ["₹1,200", "₹300", "₹45", "₹9,999"] * 3,
+        }
+    )
+    profile = profile_dataframe(df)
+    issues = run_detectors(df, profile=profile)
+    by_kind = {i.kind: i for i in issues}
+    assert by_kind["mixed_date_formats"].evidence["affected"] == 9  # the three ISO cells are fine
+    assert by_kind["currency_format"].evidence["affected"] == 12
+    assert _affected_fraction(by_kind["mixed_date_formats"].evidence, 12) == 0.75
+    assert quality_score(profile, issues).score < 100
+
+
+def test_signs_and_marks_next_to_letters_keep_categories_apart():
+    # normalize_key drops "+", "-" and "#", so blood groups A-/A+ and C/C++/C# used to
+    # cluster as case variants (confidence 0.9) and silently merge.
+    import cleanframe as cf
+    from cleanframe.detectors.categories import _is_negation_pair
+
+    df = pd.DataFrame(
+        {
+            "blood": ["A+"] * 10 + ["A-"] * 2 + ["O+"] * 9 + ["O-"] * 1 + ["B+"] * 5,
+            "lang": ["C"] * 6 + ["C++"] * 2 + ["C#"] * 4 + ["Python"] * 15,
+            "city": ["New York"] * 10 + ["New-York"] * 2 + ["NEW YORK"] * 3 + ["Boston"] * 12,
+        }
+    )
+    out = cf.clean(df).dataframe
+    assert set(out["blood"]) == {"A+", "A-", "O+", "O-", "B+"}
+    assert set(out["lang"]) == {"C", "C++", "C#", "Python"}
+    assert set(out["city"]) == {"New York", "Boston"}  # a hyphen between letters is cosmetic
+    assert _is_negation_pair("Very dissatisfied", "Very satisfied")
+    assert not _is_negation_pair("Very satisfied", "Quite satisfied")
+
+
+def test_similarity_of_non_latin_text_is_not_a_perfect_match():
+    from cleanframe._util import similarity
+
+    assert similarity("दिल्ली", "मुंबई") < 0.5
+    assert similarity("名前", "名前") == 1.0

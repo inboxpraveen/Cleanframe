@@ -7,6 +7,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-18
+
+Decision models, agents, a playground and data CI. CleanFrame can now ask a typed decision model
+(TypeSafe's Jev, an open "System One" model, or any LLM through an adapter) the judgment calls rules
+leave open, and freeze the confident answers into the recipe. Replay still makes zero AI calls. This
+release also fixes two pandas 3 bugs and a rules merge that could fold one real value into another.
+
+### Added
+
+- **Decision models: `clean(decide=...)` / `cleanframe clean --decide SPEC`** (`cleanframe/decisions.py`).
+  CleanFrame asks four kinds of typed questions: is `BLR` another name for `Bangalore` (choice); is a typo
+  merge the rules made really the same category (yes/no, and a "no" **vetoes** the merge); does an ambiguous
+  token such as `none`/`-`/`unknown` mean missing in *this* column (yes/no); which source column holds a
+  weakly-matched schema field (choice).
+  - Backends: `typesafe/<model>` (`TYPESAFE_API_KEY`), `openrouter/typesafe/<model>` (`OPENROUTER_API_KEY`),
+    `systemone/<model>` for self-hosted Jev-compatible servers (`SYSTEMONE_BASE_URL`), `rules` (offline
+    heuristics), any LLM spec through an adapter (recorded as `calibrated: false`), or a custom object with
+    `.decide()`. The System One wire protocol is implemented with the standard library: no new dependency.
+  - Policy: an answer that changes data needs `p ≥ max(mode threshold, decision_threshold)` (0.9 by default).
+    Below that it is a recorded suggestion, never executed. Undoing a rules merge only needs `p > 0.5`.
+    Confirming every typo merge in a column lifts it to 0.9 confidence so it survives `strict`.
+  - Privacy follows `llm_exposure`: under `metadata` only schema questions (names, types, patterns) and
+    null-token questions (tokens from CleanFrame's fixed vocabulary) are asked. Category questions need
+    `sample` and are only asked about columns whose values repeat.
+  - Every answer is recorded in `recipe.meta.decisions` (model, calibrated, threshold, counts, records);
+    `CleanResult.decisions` and the CLI's `--json` summary carry the same. Questions are built from sorted
+    distinct values, so row order cannot change them. `max_decisions` caps cost, 429/5xx are retried with
+    backoff, and a failing backend falls back to the rules plan with a warning (`--no-llm-fallback` raises).
+  - New flags: `--decide`, `--decision-threshold`, `--max-decisions`.
+- **`cleanframe demo`.** A guided run on sample data that now ships inside the wheel
+  (`cleanframe/demo_data/`): profile, clean into a recipe, watch next month's drifted file **stop**, then
+  replay the drafted patch. It works right after `pip install`, with no clone and no API key. Also
+  `cleanframe.demo.demo_file()` / `run_demo()`. Before this, the README's first command needed a clone.
+- `examples/next_month_customers.csv`: the drifted sample the demo uses.
+- **MCP server for AI agents**: `cleanframe-mcp`, `cleanframe mcp` or `python -m cleanframe.mcp_server`
+  (extra `[mcp]`, `mcp>=2.3`). Seven tools: `profile_data`, `suggest_recipe`, `apply_recipe`,
+  `check_drift`, `explain_recipe`, `list_capabilities`, `export_code`.
+  - Errors come back structured (`ok`/`kind`) and flagged `isError`. Output is bounded JSON, with every cap reported.
+  - The input file is never written, and drift stops a replay by default.
+  - `CLEANFRAME_AGENT_HIDE_VALUES=1` replaces quoted cell values with `"<hidden>"`.
+  - The same tools are plain functions in `cleanframe.agent_tools`, with no `mcp` dependency.
+- **Agent Skill** `skills/cleanframe/SKILL.md`, installed with `npx skills add inboxpraveen/Cleanframe`. It
+  teaches Claude Code, Codex, Cursor and other agents the recipe workflow and its hard rules, instead of
+  throwaway pandas.
+- **GitHub Action "CleanFrame Data CI"** (`action/`, `uses: inboxpraveen/Cleanframe/action@v0.5.0`).
+  - Replays committed recipes over data files on pull requests or a schedule, and fails the check on schema
+    drift (exit 3) or validation failure (exit 4).
+  - Writes a per-file job-summary table and annotations.
+  - Outputs: `drift`, `changed-cells`, `quarantined`, `failed-files`, `exit-code`, `results-file`.
+  - Inputs reach its scripts only through environment variables, and CleanFrame runs in an isolated virtualenv.
+  - See `docs/github-action.md` and `examples/github-action/data-ci.yml`.
+- **In-browser playground** (`playground/`, https://inboxpraveen.github.io/Cleanframe/).
+  - Drop a CSV/TSV/XLSX and get a Mess Score (100 − quality score), the detected problems, the YAML recipe, a
+    cell-level diff, the generated pandas code and both HTML reports.
+  - A shareable score card shows counts only, never names or values.
+  - CleanFrame runs client-side in Pyodide 314.0.7 in a Web Worker. A Content-Security-Policy limits the page
+    to its own site and the pinned Pyodide CDN path, so files never leave the browser.
+  - Deployed by `.github/workflows/pages.yml` from a wheel built from `main`; `python playground/dev_server.py`
+    serves it locally.
+- **CleanBench** (`bench/`, not shipped in the wheel or sdist): a benchmark for data-cleaning decisions.
+  - It runs `decide=` backends through CleanFrame's real pipeline on 60 hand-labelled messy tables
+    (299 questions: aliases, typo merges, null tokens, schema mapping).
+  - Gold is written as equivalence classes and checked by an offline oracle pass. Every scenario lists the
+    questions it must produce.
+  - Metrics: safe-apply precision (of the changes a system makes, how many are right), coverage@0.9, macro
+    accuracy with scenario-bootstrap CIs, ECE, Brier, cells fixed vs corrupted, latency, $ per 1k decisions.
+  - `python -m bench.cleanbench {validate,run,leaderboard,export,hash}`. `export` writes standalone System One
+    requests with gold, for other leaderboards.
+  - A private held-out split is committed only as a SHA-256.
+  - The rules baseline is on `bench/LEADERBOARD.md` with its misses visible. Docs: `docs/benchmark.md`.
+- CI: a required **pandas 3** job (pandas 3.0 shipped in January; the existing job only tried
+  pre-releases), and an **action smoke** job that runs the action on Linux, Windows and macOS runners.
+
+### Fixed
+
+- **pandas 3: `dedup` with `ignore_case` silently kept case-variant duplicates.** The key builder only
+  case-folded `object` columns, and pandas 3 reads text as dtype `str`. It now folds `str`/`string`/categorical
+  columns too, in the executor and in exported code alike.
+- **pandas 3.1: `fill_na` warns, and pandas 4 would make it fail,** when the fill value doesn't fit the
+  column: `empty` or a text value into a number or date column, `zero` into text (pandas 3's default
+  text dtype). pandas used to turn such a column into `object` silently; 3.1 deprecates that. The op and
+  exported code now cast explicitly first, so results are unchanged and nothing warns. Caught by the
+  pandas pre-release CI job on 3.1.0rc0.
+- **A typo merge could fold one real value into another.** `Austria` (rare) was merged into `Australia`
+  in `review` and `auto` mode because the names score 0.875 similar. A typo merge now also needs the two
+  spellings to be one edit apart, so look-alikes and opposites two letters apart stay separate
+  (`Hypothyroidism`/`Hyperthyroidism`, `Prednisone`/`Prednisolone`). Real typos (`Banglore`, `Kolkatta`,
+  `Califronia`) still merge; rarer two-edit typos are left to a human or a decision model.
+- **Categories that differ only in `+`, `-` or `#` were merged as case variants** (confidence 0.9, applied
+  in every mode): blood groups `A-` → `A+`, `O-` → `O+`; `C++`/`C#` → `C`. These marks now always count.
+  A hyphen between letters (`New-York`) is still cosmetic.
+- **`similarity()` scored any two non-Latin strings as identical** (both reduce to an empty ASCII key), so
+  `दिल्ली` matched `मुंबई` perfectly in schema mapping and drift. Such pairs are now compared as text.
+- Negation is detected inside phrases too (`Very dissatisfied` / `Very satisfied`).
+- **The quality score ignored date-format and money-as-text problems.** Those issues report `unparsed: 0`
+  when every value parses, and the scorer read that as "no rows affected". So a column in three date
+  formats cost nothing. The detectors now report an explicit `affected` count, and the scorer prefers it.
+  Scores for such files drop (the bundled sample goes from 87 to 80); that is the fix, not a regression.
+- `docs/plugins.md` showed `cleanframe --plugin X apply …`, which is a usage error; global flags go after
+  the subcommand.
+- Two tests assumed pandas 2 string semantics and failed on pandas 3 without a library bug behind them;
+  they now accept either representation of a missing text cell.
+
+### Changed
+
+- `pyproject.toml` and `CITATION.cff` name the maintainer (Praveen Kumar); PyPI keywords and project
+  URLs (Playground, Funding) added.
+- `docs/cli.md`: the `--json` summary documents `usage_error` and the `decisions` field.
+
 ## [0.4.0] — 2026-09-30
 
 A correctness release. An empirical review (26 hard-input probes, a 1M/3M-row benchmark and a

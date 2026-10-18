@@ -19,6 +19,7 @@ pip install "cleanframe-engine[excel]"     # .xlsx / .xlsm
 pip install "cleanframe-engine[parquet]"   # .parquet (pyarrow)
 pip install "cleanframe-engine[detect]"    # better encoding suggestions (charset-normalizer)
 pip install "cleanframe-engine[llm]"       # Anthropic + OpenAI SDKs
+pip install "cleanframe-engine[mcp]"       # MCP server for AI agents
 pip install "cleanframe-engine[all]"       # everything
 ```
 
@@ -27,7 +28,17 @@ package is `cleanframe` (`import cleanframe as cf`).
 
 ## 30-second CLI demo
 
-From a clone of this repo (or any CSV):
+No clone needed. The sample data ships inside the package:
+
+```bash
+cleanframe demo
+```
+
+It writes `./cleanframe-demo/`, profiles a messy file, cleans it into a recipe, shows the replay
+**stopping** on next month's drifted file, and drafts the patch, printing each step's command.
+Or try it in the browser with nothing installed: https://inboxpraveen.github.io/Cleanframe/
+
+Step by step, on the demo files (or on any CSV):
 
 ```bash
 cleanframe report examples/messy_customers.csv

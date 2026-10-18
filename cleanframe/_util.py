@@ -160,7 +160,13 @@ def similarity(a: str, b: str) -> float:
     """
     sa, sb = snake_case(a), snake_case(b)
     if not sa and not sb:
-        return 1.0
+        # Neither has an ASCII letter or digit (``दिल्ली``, ``名前``, ``?``): compare the
+        # text itself. Calling every such pair identical made different non-Latin names
+        # a perfect match.
+        ca, cb = str(a).strip().casefold(), str(b).strip().casefold()
+        if ca == cb:
+            return 1.0
+        return round(SequenceMatcher(None, ca, cb).ratio(), 4)
     if not sa or not sb:
         return 0.0
     if sa == sb:

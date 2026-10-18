@@ -3,15 +3,18 @@ title: "CleanFrame: the reproducible data-cleaning engine for Python"
 message: "If you use CleanFrame in published work, please cite it."
 type: software
 authors:
-  - name: "CleanFrame contributors"
+  - given-names: "Praveen"
+    family-names: "Kumar"
+    alias: "inboxpraveen"
 repository-code: "https://github.com/inboxpraveen/Cleanframe"
 url: "https://github.com/inboxpraveen/Cleanframe"
 license: Apache-2.0
-version: 0.4.0
-date-released: "2026-09-30"
+version: 0.5.0
+date-released: "2026-10-18"
 keywords:
   - data-cleaning
   - data-quality
   - reproducibility
   - pandas
   - schema-drift
+  - decision-models

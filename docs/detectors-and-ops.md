@@ -88,6 +88,15 @@ generated standalone code embeds verbatim, so both agree:
 Categories are never merged across a numeric difference: `-300`/`300`, `12.00`/`1,200` and `A-1`/`A1` differ in sign, decimal
 or grouping and stay separate values.
 
+A **typo merge** (`Banglore` → `Bangalore`) needs all of: name similarity ≥ 0.86, at most one edit
+(a dropped, doubled, wrong or swapped letter), the variant
+being at most a third as frequent as the canonical spelling, and no negation prefix
+(`insured`/`uninsured`, also inside a phrase: `Very dissatisfied`/`Very satisfied`). So `Austria` and
+`Hypothyroidism` (two edits from `Australia` and `Hyperthyroidism`) stay separate values, and `+`, `#`
+and a leading or trailing `-` always count (`A+`/`A-`, `C`/`C#`). Typo merges
+carry confidence 0.7. To have each one checked, and to merge abbreviations such as `BLR`, use a
+[decision model](decisions.md).
+
 ## Writing a validator
 
 ```python

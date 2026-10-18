@@ -24,6 +24,8 @@ from .base import DetectorContext, detector
 _DAYFIRST_FORMATS = {"%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%d.%m.%y"}
 _MONTHFIRST_FORMATS = {"%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y"}
 _SLASH_DATE_RE = re.compile(r"^\s*(\d{1,2})[/\-.](\d{1,2})[/\-.]\d{2,4}\s*$")
+#: Already in the ISO output shape (date, optionally with a time part).
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?$")
 
 
 def _infer_direction(values: list[str]) -> bool | None:
@@ -150,9 +152,13 @@ def detect_dates(series: pd.Series, ctx: DetectorContext) -> Issues:
     # Preserve time-of-day if any inferred format carries one (don't truncate to date).
     output = "%Y-%m-%dT%H:%M:%S" if any("%H" in f for f in formats) else "%Y-%m-%d"
 
+    # Values the parse_date op will rewrite (everything not already ISO), scaled from
+    # the detector sample to the column, so the quality score sees how much is affected.
+    non_iso = sum(1 for v in values if not _ISO_DATE_RE.match(v.strip()))
     evidence = {
         "formats_found": formats,
         "unparsed": unparsed,
+        "affected": int(round(non_iso / len(values) * cp.count)) if values else 0,
         "examples": _cap_examples(values),
     }
     if ambiguous:

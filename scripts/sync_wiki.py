@@ -30,7 +30,11 @@ PAGES = {
     "detectors-and-ops.md": "Detectors-and-Ops.md",
     "plugins.md": "Plugins.md",
     "llm.md": "LLM-Planning.md",
+    "decisions.md": "Decision-Models.md",
+    "agents.md": "AI-Agents.md",
+    "benchmark.md": "Benchmark.md",
     "production.md": "Production-Guide.md",
+    "github-action.md": "GitHub-Action.md",
     "architecture.md": "Architecture.md",
     "faq.md": "FAQ.md",
 }

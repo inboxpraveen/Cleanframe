@@ -1,0 +1,12 @@
+{
+  "name": "cleanframe-playground-smoke",
+  "private": true,
+  "description": "Node smoke test for the CleanFrame playground (not run in CI). See node_smoke.mjs.",
+  "type": "module",
+  "scripts": {
+    "smoke": "node node_smoke.mjs"
+  },
+  "devDependencies": {
+    "pyodide": "314.0.7"
+  }
+}
