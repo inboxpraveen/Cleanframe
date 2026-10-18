@@ -10,7 +10,7 @@ repository-code: "https://github.com/inboxpraveen/Cleanframe"
 url: "https://github.com/inboxpraveen/Cleanframe"
 license: Apache-2.0
 version: 0.5.0
-date-released: "2026-10-17"
+date-released: "2026-10-18"
 keywords:
   - data-cleaning
   - data-quality

@@ -94,6 +94,18 @@ def _date_source() -> str:
     return "\n" + "\n\n".join(parts) + "\n"
 
 
+def _fill_source() -> str:
+    """The executor's ``fill_na`` helpers, embedded verbatim."""
+    import inspect
+
+    from . import ops
+
+    return "\n" + "\n\n".join(
+        inspect.getsource(fn)
+        for fn in (ops._parse_text, ops._fill_needs_object, ops._fill_missing)
+    )
+
+
 def _plugin_helpers(recipe: Recipe) -> str:
     """Module-level source declared by the plugin ops this recipe uses (once each)."""
     from .ops import OP_REGISTRY
@@ -134,6 +146,7 @@ Edit freely — this file has no third-party dependency. Regenerate with
 ``result.code.save(...)`` if you change the recipe.
 """
 
+import datetime
 import re
 import unicodedata
 import warnings
@@ -489,12 +502,12 @@ def _fill_na_gen(params: dict, c: str) -> list[str]:
     col = _col(c)
     strategy = params.get("strategy")
     if strategy is None:
-        return [f"    {col} = {col}.fillna({params.get('value')!r})"]
+        return [f"    {col} = _fill_missing({col}, {params.get('value')!r})"]
     strategy = str(strategy).lower()
     if strategy == "mean":
-        return [f"    {col} = {col}.fillna(pd.to_numeric({col}, errors='coerce').mean())"]
+        return [f"    {col} = _fill_missing({col}, pd.to_numeric({col}, errors='coerce').mean())"]
     if strategy == "median":
-        return [f"    {col} = {col}.fillna(pd.to_numeric({col}, errors='coerce').median())"]
+        return [f"    {col} = _fill_missing({col}, pd.to_numeric({col}, errors='coerce').median())"]
     if strategy == "mode":
         return [
             f"    _modes = {col}.dropna().mode()",
@@ -505,9 +518,9 @@ def _fill_na_gen(params: dict, c: str) -> list[str]:
     if strategy in ("bfill", "backfill"):
         return [f"    {col} = {col}.bfill()"]
     if strategy == "zero":
-        return [f"    {col} = {col}.fillna(0)"]
+        return [f"    {col} = _fill_missing({col}, 0)"]
     if strategy == "empty":
-        return [f"    {col} = {col}.fillna('')"]
+        return [f"    {col} = _fill_missing({col}, '')"]
     return [f"    # NOTE: unknown fill_na strategy {strategy!r} not reproduced"]
 
 
@@ -744,6 +757,7 @@ def generate_code(
         _numparse_source(),
         _textparse_source(),
         _date_source(),
+        _fill_source(),
         _HELPERS,
         _plugin_helpers(recipe),
     ]

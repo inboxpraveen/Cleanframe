@@ -21,6 +21,7 @@ Adding an op is intentionally a ~15-line affair — see ``CONTRIBUTING.md``.
 
 from __future__ import annotations
 
+import datetime
 import inspect
 import math
 import re
@@ -559,6 +560,63 @@ def _compact_fill_na(p: dict) -> dict:
     return out
 
 
+def _parse_text(value, parser):
+    """``parser(value)`` (``pd.Timestamp``/``pd.Timedelta``) for a string it reads, else None.
+
+    ``''`` reads as NaT.
+    """
+    if isinstance(value, str):
+        try:
+            return parser(value)
+        except ValueError:
+            pass
+    return None
+
+
+def _fill_needs_object(dtype, value):
+    """True when pandas stores ``value`` in a column of ``dtype`` by turning it into object.
+
+    That is ``''`` or ``True`` into a float column, ``0`` into text or dates, ``'unknown'``
+    into dates. Other extension dtypes (``Int64``, ``category``) refuse instead, as before.
+    """
+    if isinstance(dtype, pd.StringDtype):
+        return not isinstance(value, str)
+    if isinstance(dtype, pd.DatetimeTZDtype):
+        if isinstance(value, datetime.datetime):
+            return value.tzinfo is None
+        return _parse_text(value, pd.Timestamp) is None
+    if not isinstance(dtype, np.dtype) or dtype.kind in "bO":
+        return False
+    if isinstance(value, (bool, np.bool_)):
+        return True
+    if dtype.kind in "iufc":
+        number = isinstance(value, (int, float, complex, np.number))
+        return not number or isinstance(value, np.timedelta64)
+    if dtype.kind == "M":
+        if isinstance(value, datetime.datetime):
+            return value.tzinfo is not None
+        parsed = _parse_text(value, pd.Timestamp)
+        naive = parsed is not None and parsed.tzinfo is None
+        return not (isinstance(value, np.datetime64) or naive)
+    if dtype.kind == "m":
+        held = isinstance(value, (datetime.timedelta, np.timedelta64))
+        return not (held or _parse_text(value, pd.Timedelta) is not None)
+    return False
+
+
+def _fill_missing(series, value):
+    """``series.fillna(value)``, with the upcast to object made explicit.
+
+    pandas has always stored a value the dtype cannot hold by silently making the column
+    object. pandas 3.1 deprecates that and pandas 4 raises, so the cast is done here first
+    and the result stays what it has been.
+    """
+    missing_value = value is None or (isinstance(value, float) and value != value)
+    if not missing_value and series.isna().any() and _fill_needs_object(series.dtype, value):
+        series = series.astype(object)
+    return series.fillna(value)
+
+
 @register_op("fill_na", coerce=_coerce_fill_na, compact=_compact_fill_na)
 def fill_na(series: pd.Series, value: Any = None, strategy: str | None = None) -> pd.Series:
     """Fill missing values. Only ever runs when a human put it in the recipe.
@@ -568,12 +626,12 @@ def fill_na(series: pd.Series, value: Any = None, strategy: str | None = None) -
     this op automatically — missing data is reported, not silently imputed.
     """
     if strategy is None:
-        return series.fillna(value)
+        return _fill_missing(series, value)
     strategy = str(strategy).lower()
     if strategy == "mean":
-        return series.fillna(pd.to_numeric(series, errors="coerce").mean())
+        return _fill_missing(series, pd.to_numeric(series, errors="coerce").mean())
     if strategy == "median":
-        return series.fillna(pd.to_numeric(series, errors="coerce").median())
+        return _fill_missing(series, pd.to_numeric(series, errors="coerce").median())
     if strategy == "mode":
         modes = series.dropna().mode()
         if len(modes) == 0:
@@ -584,9 +642,9 @@ def fill_na(series: pd.Series, value: Any = None, strategy: str | None = None) -
     if strategy in ("bfill", "backfill"):
         return series.bfill()
     if strategy == "zero":
-        return series.fillna(0)
+        return _fill_missing(series, 0)
     if strategy == "empty":
-        return series.fillna("")
+        return _fill_missing(series, "")
     raise OpError(f"Unknown fill_na strategy {strategy!r}.")
 
 

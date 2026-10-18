@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] — 2026-10-17
+## [0.5.0] — 2026-10-18
 
 Decision models, agents, a playground and data CI. CleanFrame can now ask a typed decision model
 (TypeSafe's Jev, an open "System One" model, or any LLM through an adapter) the judgment calls rules
@@ -85,6 +85,11 @@ release also fixes two pandas 3 bugs and a rules merge that could fold one real 
 - **pandas 3: `dedup` with `ignore_case` silently kept case-variant duplicates.** The key builder only
   case-folded `object` columns, and pandas 3 reads text as dtype `str`. It now folds `str`/`string`/categorical
   columns too, in the executor and in exported code alike.
+- **pandas 3.1: `fill_na` warns, and pandas 4 would make it fail,** when the fill value doesn't fit the
+  column: `empty` or a text value into a number or date column, `zero` into text (pandas 3's default
+  text dtype). pandas used to turn such a column into `object` silently; 3.1 deprecates that. The op and
+  exported code now cast explicitly first, so results are unchanged and nothing warns. Caught by the
+  pandas pre-release CI job on 3.1.0rc0.
 - **A typo merge could fold one real value into another.** `Austria` (rare) was merged into `Australia`
   in `review` and `auto` mode because the names score 0.875 similar. A typo merge now also needs the two
   spellings to be one edit apart, so look-alikes and opposites two letters apart stay separate
