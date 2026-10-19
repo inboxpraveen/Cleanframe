@@ -42,6 +42,10 @@ class DemoRun:
     issues: list = field(default_factory=list)
     clean_summary: dict = field(default_factory=dict)
     quarantined: int = 0
+    #: Exact duplicate rows the recipe dropped (quarantined rows are not counted here).
+    duplicates: int = 0
+    #: Rows dropped for any other reason: a ``drop`` validation rule or a plugin frame op.
+    dropped: int = 0
     drift_text: str = ""
     patch_notes: list[str] = field(default_factory=list)
     replay_rows: int = 0
@@ -98,6 +102,11 @@ def run_demo(directory: str | Path, *, overwrite: bool = False) -> DemoRun:
         result.report(run.files["diff"])
         run.clean_summary = result.diff.summary()
         run.quarantined = int(len(result.quarantine))
+        # diff.dropped_rows lists every row missing from the clean output, the
+        # quarantined ones included, so split it before naming any count.
+        removed = result.diff.dropped_rows
+        run.duplicates = sum(1 for _, reason in removed if reason == "dedup")
+        run.dropped = len(removed) - run.quarantined - run.duplicates
 
         next_month = run.files["next_month_customers.csv"]
         try:

@@ -348,11 +348,13 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         f"--recipe {run.files['recipe']} --out {run.files['clean']} "
         f"--code {run.files['code']} --report {run.files['diff']}"
     )
-    _emit(
-        f"   {s.get('changed_cells', 0)} cell(s) changed in {s.get('changed_columns', 0)} column(s), "
-        f"{s.get('rows_dropped', 0)} duplicate row(s) dropped, {run.quarantined} row(s) quarantined "
-        "(held with a reason, never deleted)"
-    )
+    parts = [f"{s.get('changed_cells', 0)} cell(s) changed in {s.get('changed_columns', 0)} column(s)"]
+    if run.duplicates:
+        parts.append(f"{run.duplicates} duplicate row(s) dropped")
+    if run.dropped:
+        parts.append(f"{run.dropped} other row(s) dropped")
+    parts.append(f"{run.quarantined} row(s) quarantined (held with a reason, never deleted)")
+    _emit("   " + ", ".join(parts))
     _note(diff=s, rows_quarantined=run.quarantined)
     for key in ("recipe", "clean", "code", "diff"):
         _emit(f"   ✓ {run.files[key]}")

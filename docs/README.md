@@ -1,3 +1,5 @@
+<img src="assets/Logo.svg" alt="CleanFrame logo" width="72" />
+
 # CleanFrame documentation
 
 Welcome. This folder is the **in-repo** documentation for CleanFrame.

@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/inboxpraveen/Cleanframe/main/docs/assets/Logo.svg" alt="CleanFrame logo" width="72" />
+
 # CleanFrame
 
 **The reproducible data-cleaning engine for Python.**

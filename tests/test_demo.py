@@ -33,6 +33,9 @@ def test_demo_runs_report_clean_drift_and_patch(tmp_path):
         assert Path(run.files[key]).is_file(), key
     assert run.quality is not None and 0 <= run.quality.score <= 100
     assert run.quarantined == 1  # the one invalid email is held back, not deleted
+    # the quarantined row is the only one missing from the output: it is no duplicate
+    assert (run.duplicates, run.dropped) == (0, 0)
+    assert run.clean_summary["rows_dropped"] == run.quarantined
     assert "Amt (INR)" in run.drift_text
     assert any("Amt (INR)" in note for note in run.patch_notes)
     assert run.replay_rows == 4
@@ -52,3 +55,5 @@ def test_demo_cli_json_summary(tmp_path):
     assert summary["status"] == "ok" and summary["command"] == "demo"
     assert Path(summary["outputs"]["recipe"]).is_file()
     assert "Schema drift detected" in out.stderr
+    assert "1 row(s) quarantined" in out.stderr
+    assert "duplicate row(s) dropped" not in out.stderr

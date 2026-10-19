@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-10-19
+
+One logo everywhere, a README hero made from real output, and a correct row count in `cleanframe demo`.
+
+### Changed
+
+- The HTML profiling and diff reports show the CleanFrame mark in their header, the same mark as the
+  README, the docs and the playground. `docs/assets/Logo.svg` is now the one source of the mark.
+- The README hero is rendered from a real `cleanframe demo` run by `scripts/render_brand_assets.py`, in a
+  light and a dark version: the messy file, the recipe excerpt, the clean output with its quarantined row,
+  and the drift stop on next month's file. It replaces an illustration whose steps were not CleanFrame ops.
+
+### Fixed
+
+- `cleanframe demo` said "1 duplicate row(s) dropped" for the row it had quarantined. Its summary now
+  reports the quarantined row on its own and names duplicates only when the recipe dropped some.
+
 ## [0.5.0] — 2026-10-18
 
 Decision models, agents, a playground and data CI. CleanFrame can now ask a typed decision model
@@ -499,7 +516,10 @@ now fail loudly, and a few transforms that quietly corrupted data no longer run.
   deterministic executor, validation/quarantine, cell-level diff, schema drift, HTML reports,
   codegen, and CLI.
 
-[Unreleased]: https://github.com/inboxpraveen/Cleanframe/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/inboxpraveen/Cleanframe/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.5.1
+[0.5.0]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.5.0
+[0.4.0]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.4.0
 [0.3.1]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.3.1
 [0.3.0]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.3.0
 [0.2.0]: https://github.com/inboxpraveen/Cleanframe/commits/main
