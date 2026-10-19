@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <style>.s{fill:#5a6780}@media (prefers-color-scheme:dark){.s{fill:#94a3b8}}</style>
+  <style>.c{fill:#06b6d4}.s{fill:#5a6780}@media (prefers-color-scheme:dark){.c{fill:#22d3ee}.s{fill:#64748b}}</style>
   <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#06b6d4"/><stop offset=".5" stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
   <path d="M5 21V5h16M43 5h16v16M59 43v16H43M21 59H5V43" fill="none" stroke="url(#g)" stroke-width="6"/>
-  <g fill="#06b6d4"><rect x="15" y="15" width="10" height="10"/><rect x="39" y="15" width="10" height="10"/><rect x="27" y="27" width="10" height="10"/><rect x="15" y="39" width="10" height="10"/><rect x="39" y="39" width="10" height="10"/></g>
+  <g class="c"><rect x="15" y="15" width="10" height="10"/><rect x="39" y="15" width="10" height="10"/><rect x="27" y="27" width="10" height="10"/><rect x="15" y="39" width="10" height="10"/><rect x="39" y="39" width="10" height="10"/></g>
   <g class="s"><rect x="27" y="15" width="10" height="10"/><rect x="15" y="27" width="10" height="10"/><rect x="39" y="27" width="10" height="10"/><rect x="27" y="39" width="10" height="10"/></g>
 </svg>

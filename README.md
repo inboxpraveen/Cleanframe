@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/inboxpraveen/Cleanframe/main/docs/assets/Logo.png" alt="CleanFrame logo" width="180" />
+  <img src="https://raw.githubusercontent.com/inboxpraveen/Cleanframe/main/docs/assets/Logo.svg" alt="CleanFrame logo" width="120" />
 </p>
 
 <h1 align="center">CleanFrame</h1>
@@ -15,7 +15,10 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/inboxpraveen/Cleanframe/main/docs/assets/Hero.png" width="auto" alt="CleanFrame"/>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inboxpraveen/Cleanframe/main/docs/assets/Hero-dark.png">
+    <img src="https://raw.githubusercontent.com/inboxpraveen/Cleanframe/main/docs/assets/Hero.png" width="100%" alt="Real output of cleanframe demo: a messy customers CSV becomes clean data through a reviewable YAML recipe. Changed cells are highlighted, a row with an invalid email is held in quarantine, and next month's renamed column stops the replay."/>
+  </picture>
 </p>
 
 <p align="center">
@@ -214,7 +217,7 @@ Fail a pull request when a data file drifts from its committed recipe:
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: inboxpraveen/Cleanframe/action@v0.5.0
+- uses: inboxpraveen/Cleanframe/action@v0.5.1
   with:
     files: data/incoming/*.csv
     recipe: recipes/customer.recipe.yaml
@@ -371,13 +374,16 @@ CleanFrame is free, Apache-2.0, and will stay that way. No feature is paywalled 
 and a messy CSV. If it saves your team recurring hours, [sponsorship](https://github.com/sponsors/inboxpraveen)
 funds detector coverage, CleanBench runs on new models, and fast fixes for anything that costs you data.
 
-| Tier | What it funds, and what you get |
+| Tier | What you get |
 |---|---|
-| **Supporter** ($5/mo) | Your name in the release notes |
-| **Cleaner** ($25/mo) | Your detector request jumps the queue |
-| **Team** ($100/mo) | Logo here, priority bug triage, a vote on the roadmap |
-| **Production** ($500/mo) | A quarterly recipe/pipeline review call and private CleanBench runs on your anonymised data |
-| **One-time** | A regional detector pack (India GST/PAN/lakh–crore, EU IBAN/VAT, …) built in the open, credited to you |
+| **$5/mo** | Your name in the sponsors list |
+| **$25/mo** | Your name and a link in this README; issues you open are looked at first |
+| **$100/mo**: retainer, patch on demand | I build the recipe for one recurring file (a vendor export, a settlement report, a CRM dump). You own it and run it; when the format changes, I patch it within 3 business days |
+| **$150/mo**: company sponsor | A short section near the top of this README with your logo, a link and two or three lines you write, plus a mention in the release notes |
+| **$200/mo**: retainer, monthly run | Patch on demand, plus I run the recipe on each new file and send the cleaned output with a cell-level diff, and one custom detector per quarter. Your data stays on my machine, is never shared or used for training, and is deleted after 30 days |
+| **$250 one-time**: recipe build | Send one file. You get a schema and a complete recipe committed to your repo, the cleaned output with a report and a diff of every changed cell, a 30-minute handover call, and 30 days of support |
+
+The [Sponsors page](https://github.com/sponsors/inboxpraveen) has the current tiers and terms.
 
 ---
 

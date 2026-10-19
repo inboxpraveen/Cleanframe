@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/inboxpraveen/Cleanframe/main/docs/assets/Logo.svg" alt="CleanFrame logo" width="72" />
+
 # CleanFrame Data CI
 
 **Data CI for your cleaning recipes.** On every pull request (or on a schedule) this
@@ -6,7 +8,7 @@ recipes against your data files. It fails the build when a file's schema has dri
 or a validation fails, and it writes a readable table to the job summary.
 
 ```yaml
-- uses: inboxpraveen/Cleanframe/action@v0.5.0
+- uses: inboxpraveen/Cleanframe/action@v0.5.1
   with:
     files: data/incoming/*.csv
     recipe: recipes/customer.recipe.yaml
@@ -45,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Replay committed recipes
-        uses: inboxpraveen/Cleanframe/action@v0.5.0
+        uses: inboxpraveen/Cleanframe/action@v0.5.1
         with:
           files: |
             data/incoming/*.csv
@@ -164,7 +166,7 @@ jobs:
             files: data/orders/**/*.csv
     steps:
       - uses: actions/checkout@v7
-      - uses: inboxpraveen/Cleanframe/action@v0.5.0
+      - uses: inboxpraveen/Cleanframe/action@v0.5.1
         with:
           files: ${{ matrix.files }}
           recipe: ${{ matrix.recipe }}
@@ -184,7 +186,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Replay
         id: cleanframe
-        uses: inboxpraveen/Cleanframe/action@v0.5.0
+        uses: inboxpraveen/Cleanframe/action@v0.5.1
         continue-on-error: true          # keep going so the next step can react
         with:
           files: data/landing/**/*.csv
@@ -200,7 +202,7 @@ jobs:
 ### Keep the cleaned files
 
 ```yaml
-      - uses: inboxpraveen/Cleanframe/action@v0.5.0
+      - uses: inboxpraveen/Cleanframe/action@v0.5.1
         id: cleanframe
         with:
           files: data/incoming/*.csv
@@ -247,12 +249,12 @@ set `CLEANFRAME_PLUGINS: my_pkg.cleanframe_plugin` under the step's `env:`.
 
 ```yaml
         with:
-          cleanframe-version: "0.5.0"
+          cleanframe-version: "0.5.1"
 ```
 
 ## Versioning
 
-- **`uses: inboxpraveen/Cleanframe/action@v0.5.0`**: with `cleanframe-version` left
+- **`uses: inboxpraveen/Cleanframe/action@v0.5.1`**: with `cleanframe-version` left
   empty, CleanFrame is installed **from the same checkout as the action**. The action
   and the library are always the same release.
 - **`uses: inboxpraveen/cleanframe-action@v1`** (once published to the Marketplace):

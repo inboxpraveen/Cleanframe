@@ -54,9 +54,13 @@ body {
   font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 .wrap { max-width: 1040px; margin: 0 auto; padding: 32px 20px 80px; }
-header.masthead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+header.masthead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }
-header.masthead h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
+header.masthead h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em;
+  display: flex; align-items: center; gap: 10px; }
+header.masthead .mark { width: 26px; height: 26px; flex: none; }
+.mark .c { fill: #06b6d4; } .mark .s { fill: #5a6780; }
+@media (prefers-color-scheme: dark) { .mark .c { fill: #22d3ee; } .mark .s { fill: #64748b; } }
 header.masthead .sub { color: var(--muted); font-size: 14px; }
 .grid { display: grid; gap: 16px; }
 .stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 28px; }
@@ -109,7 +113,7 @@ _BASE = """<!doctype html>
 </head>
 <body><div class="wrap">
 <header class="masthead">
-  <h1>CleanFrame</h1>
+  <h1><svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="cf-mark-frame" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#06b6d4"/><stop offset=".5" stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs><path d="M5 21V5h16M43 5h16v16M59 43v16H43M21 59H5V43" fill="none" stroke="url(#cf-mark-frame)" stroke-width="6"/><g class="c"><rect x="15" y="15" width="10" height="10"/><rect x="39" y="15" width="10" height="10"/><rect x="27" y="27" width="10" height="10"/><rect x="15" y="39" width="10" height="10"/><rect x="39" y="39" width="10" height="10"/></g><g class="s"><rect x="27" y="15" width="10" height="10"/><rect x="15" y="27" width="10" height="10"/><rect x="39" y="27" width="10" height="10"/><rect x="27" y="39" width="10" height="10"/></g></svg>CleanFrame</h1>
   <span class="sub">{{ subtitle }}</span>
 </header>
 {{ body|safe }}
