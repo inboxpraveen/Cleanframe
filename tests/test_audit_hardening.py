@@ -124,7 +124,7 @@ def test_strict_missing_validation_column_raises():
 def test_openai_base_url_does_not_hijack_openrouter(monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "https://evil.example/v1")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-    client = get_client("openrouter/google/gemma-4-26b-a4b-it")
+    client = get_client("openrouter/deepseek/deepseek-v4-flash-0731")
     assert client._base_url == "https://openrouter.ai/api/v1"
 
 

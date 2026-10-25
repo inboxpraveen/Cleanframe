@@ -40,7 +40,7 @@ python -m bench.cleanbench leaderboard                       # rebuild bench/LEA
 ```
 
 Any `decide=` backend works: `typesafe/...`, `openrouter/typesafe/...`,
-`systemone/<model>` (with `SYSTEMONE_BASE_URL`), `anthropic/...`, `openai/...` or
+`openrouter/liquid/d1-ultra`, any `openrouter/<chat model>`, `systemone/<model>` (with `SYSTEMONE_BASE_URL`), `anthropic/...`, `openai/...` or
 `ollama/...`. `export --out cleanbench.jsonl` writes the items as standalone System
 One requests with gold, for harnesses that do not use CleanFrame.
 

@@ -27,7 +27,7 @@ import cleanframe as cf
 
 result = cf.clean(
     "vendor_export.csv",
-    decide="typesafe/jev-latest",     # or openrouter/typesafe/jev-1.14, systemone/<model>, rules, any LLM spec
+    decide="typesafe/jev-latest",     # or openrouter/liquid/d1-ultra, openrouter/typesafe/jev-1.14, systemone/<model>, rules, any LLM spec
     llm_exposure="sample",          # category questions send distinct values (see Privacy)
 )
 result.recipe.save("vendor.recipe.yaml")
@@ -50,6 +50,7 @@ cleanframe clean vendor_export.csv --decide typesafe/jev-latest --llm-exposure s
 |---|---|---|
 | `typesafe/jev-latest` | TypeSafe's API (`https://api.typesafe.ai`) | `TYPESAFE_API_KEY` (`TYPESAFE_BASE_URL` to override the URL, as in TypeSafe's SDK) |
 | `openrouter/typesafe/jev-1.14` | Jev through OpenRouter's System One route | `OPENROUTER_API_KEY` |
+| `openrouter/liquid/d1-ultra` | Liquid AI's d1-ultra, the same route | `OPENROUTER_API_KEY` |
 | `systemone/<model>` | Any self-hosted Jev-compatible server (imajev, Laya, …) at `SYSTEMONE_BASE_URL` | `SYSTEMONE_API_KEY` (optional) |
 | `rules` | CleanFrame's own heuristics, offline: a dry run and the benchmark baseline | none |
 | any LLM spec (`anthropic/claude-sonnet-4-6`, `ollama/qwen3`, …) | The LLM, through the same typed questions | the provider's usual key |
@@ -62,12 +63,26 @@ TypeSafe's newest release. To get the same answers next time, pin a version that
 `GET https://api.typesafe.ai/v1/models` lists (TypeSafe's SDK shows pins such as
 `jev-1.13.0`). OpenRouter names the model `typesafe/jev-1.14`.
 
+On OpenRouter, CleanFrame sends TypeSafe's Jev (`typesafe/...`, `~typesafe/...`) and
+Liquid AI's d1 models (`liquid/d1-...`) to the System One route; every other
+`openrouter/...` model is a chat model and answers through the LLM adapter. Liquid's
+`lfm-*` models are chat models. Another decision model that OpenRouter serves works
+through `systemone/<vendor>/<model>` with `SYSTEMONE_BASE_URL=https://openrouter.ai/api`
+and `SYSTEMONE_API_KEY` set to your OpenRouter key.
+
+d1-ultra reads at most 32,768 tokens per request (Jev: 262,144). A request holds at most
+8 questions, so it fits for typical files; a schema question over a file with hundreds of
+unmatched columns is the case to watch. A request the backend refuses takes the usual
+fallback path, with the error in `recipe.meta['decisions']`.
+
 **Check the first real run.** A backend error (a wrong model name, a bad key) degrades to the
 rules-only plan with a warning. Run once with `--no-llm-fallback --json` and confirm that
 `decisions.answered` is above 0.
 
-LLM backends state probabilities that are not trained to be calibrated, so they
-are recorded as `calibrated: false`. Prefer a decision model when you lower
+System One decision models (Jev, d1) are recorded as `calibrated: true`: their makers
+train them to return calibrated probabilities. That is the makers' claim; CleanBench's
+ECE column measures it. LLM backends state probabilities that are not trained to be
+calibrated, so they are recorded as `calibrated: false`. Prefer a decision model when you lower
 `decision_threshold`.
 
 ## What gets asked

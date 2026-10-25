@@ -25,7 +25,7 @@ Profile, plan, and clean.
 | `max_tokens_budget` | int \| None | `None` | Hard LLM token cap |
 | `llm_exposure` | `"metadata"` \| `"sample"` \| `"none"` | `"metadata"` | What the model may see |
 | `llm_fallback` | `bool` | `True` | `False` raises instead of degrading to the rules planner when an LLM or decision call fails |
-| `decide` | `None` \| spec \| client | `None` | Decision backend for judgment calls: `"typesafe/jev-latest"`, `"openrouter/typesafe/jev-1.14"`, `"systemone/<model>"`, `"rules"`, an LLM spec, or an object with `.decide()`. Not combinable with `llm=`. See [Decision models](Decision-Models) |
+| `decide` | `None` \| spec \| client | `None` | Decision backend for judgment calls: `"typesafe/jev-latest"`, `"openrouter/typesafe/jev-1.14"`, `"openrouter/liquid/d1-ultra"`, `"systemone/<model>"`, `"rules"`, an LLM spec, or an object with `.decide()`. Not combinable with `llm=`. See [Decision models](Decision-Models) |
 | `decision_threshold` | `float` | `0.9` | Probability an answer needs before it changes data (the mode's threshold applies when higher) |
 | `max_decisions` | `int` | `200` | Cap on questions asked |
 | `source` | `str` \| `None` | `None` | Label recorded in the recipe / report for a DataFrame input |

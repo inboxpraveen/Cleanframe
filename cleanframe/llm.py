@@ -22,8 +22,10 @@ all of CleanFrame) imports fine with neither installed.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import time
 import warnings
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -38,8 +40,21 @@ from .profile import DataFrameProfile
 from .recipe import Recipe
 from .types import LLMExposure, Mode
 
-#: Default HTTP timeout (seconds) for LLM provider calls.
-LLM_HTTP_TIMEOUT = 60.0
+logger = logging.getLogger(__name__)
+
+#: Default cap on the tokens a model may write per call, reasoning included. Reasoning
+#: models think before they answer: at 2048, three of six models tested in 2026-10
+#: spent the whole cap thinking and returned no answer. Only tokens actually written
+#: are billed, and a cap above a model's own limit is lowered to it (see
+#: :func:`_lower_cap`).
+DEFAULT_MAX_OUTPUT_TOKENS = 32_768
+#: Seconds to wait for the connection, and for the answer. A reasoning model may take
+#: minutes to write a long answer; an unreachable host should fail fast.
+LLM_CONNECT_TIMEOUT = 15.0
+LLM_HTTP_TIMEOUT = 600.0
+#: Retries the provider SDK makes on rate limits, server errors and timeouts. One
+#: keeps a stalled request from hanging a run for half an hour.
+LLM_MAX_RETRIES = 1
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +65,12 @@ class LLMResponse:
     text: str
     input_tokens: int = 0
     output_tokens: int = 0
+    #: ``"stop"``, ``"length"`` (the output cap was hit), ... or ``None`` if unknown.
+    finish_reason: str | None = None
+    #: Output tokens the model spent reasoning (included in ``output_tokens``).
+    reasoning_tokens: int = 0
+    #: USD, when the provider reports it (OpenRouter does).
+    cost: float | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -61,8 +82,71 @@ class LLMClient(Protocol):
 
     model: str
 
-    def complete(self, system: str, user: str, *, max_tokens: int = 2048) -> LLMResponse:
+    def complete(
+        self, system: str, user: str, *, max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    ) -> LLMResponse:
         """Return the model's reply plus token accounting."""
+
+
+def _timeout(sdk: Any) -> Any:
+    return sdk.Timeout(LLM_HTTP_TIMEOUT, connect=LLM_CONNECT_TIMEOUT)
+
+
+_CAP_WORDS = ("max_tokens", "max_completion_tokens", "output tokens", "completion tokens")
+
+
+_CONTEXT_RE = re.compile(r"(?:maximum context length|context (?:length|window))\D{0,24}(\d+)")
+_PROMPT_USED_RE = re.compile(r"(\d+) (?:input tokens|prompt tokens|in the messages|tokens in the prompt)")
+#: Tokens kept free when a cap is derived from a context window (tokenizers differ).
+_CONTEXT_MARGIN = 64
+
+
+def _lower_cap(message: str, cap: int, prompt_tokens: int = 0) -> int | None:
+    """The output cap a provider's "cap too large" error allows, or ``None``.
+
+    OpenRouter lowers a cap above the model's limit by itself; direct APIs refuse it
+    with a 400 that names the limit (OpenAI: "supports at most 16384 completion
+    tokens", Anthropic: "32768 > 8192, which is the maximum", DeepSeek: "valid range
+    of max_tokens is [1, 8192]"): the largest number below ``cap`` is that limit. A
+    local server with a small context window (vLLM: "maximum context length is 8192
+    tokens ... 1300 in the messages") allows the window minus the prompt; the prompt
+    size comes from the message, or else from ``prompt_tokens``.
+    """
+    text = message.lower().replace(",", "")
+    window = _CONTEXT_RE.search(text)
+    if window:
+        used = _PROMPT_USED_RE.search(text)
+        room = int(window.group(1)) - (int(used.group(1)) if used else prompt_tokens) - _CONTEXT_MARGIN
+        return room if 1024 <= room < cap else None
+    if not any(word in text for word in _CAP_WORDS):
+        return None
+    below = [n for n in (int(x) for x in re.findall(r"\d+", text)) if 1024 <= n < cap]
+    return max(below) if below else None
+
+
+def _log_call(model: str, response: LLMResponse, seconds: float) -> None:
+    logger.info(
+        "llm %s: %d in / %d out tokens (%d reasoning), finish=%s, %.1fs%s",
+        model, response.input_tokens, response.output_tokens, response.reasoning_tokens,
+        response.finish_reason, seconds,
+        f", ${response.cost:.6f}" if response.cost is not None else "",
+    )
+
+
+def check_answer(response: LLMResponse, max_tokens: int) -> None:
+    """Raise :class:`LLMError` naming the cause when a reply has no answer in it."""
+    if (response.text or "").strip():
+        return
+    if response.finish_reason == "length":
+        spent = (
+            f" ({response.reasoning_tokens} of them reasoning)" if response.reasoning_tokens else ""
+        )
+        raise LLMError(
+            f"The model used its whole {max_tokens}-token output cap{spent} before it wrote "
+            "an answer. Raise max_output_tokens, or use a model that reasons less."
+        )
+    reason = f" (finish_reason={response.finish_reason})" if response.finish_reason else ""
+    raise LLMError(f"The model returned an empty answer{reason}.")
 
 
 class AnthropicClient:
@@ -72,22 +156,44 @@ class AnthropicClient:
         self.model = model
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
 
-    def complete(self, system: str, user: str, *, max_tokens: int = 2048) -> LLMResponse:
+    def complete(
+        self, system: str, user: str, *, max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    ) -> LLMResponse:
         if not self._api_key:
             raise LLMError("ANTHROPIC_API_KEY is not set.")
         try:
             import anthropic
         except ImportError as exc:  # pragma: no cover - optional dep
             raise LLMError("The 'anthropic' package is required. Install cleanframe-engine[llm].") from exc
-        client = anthropic.Anthropic(api_key=self._api_key, timeout=LLM_HTTP_TIMEOUT)
-        msg = client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
+        client = anthropic.Anthropic(
+            api_key=self._api_key, timeout=_timeout(anthropic), max_retries=LLM_MAX_RETRIES
         )
+        start = time.perf_counter()
+        while True:
+            try:
+                msg = client.messages.create(
+                    model=self.model,
+                    max_tokens=max_tokens,
+                    system=system,
+                    messages=[{"role": "user", "content": user}],
+                )
+                break
+            except anthropic.BadRequestError as exc:
+                lower = _lower_cap(str(exc), max_tokens, _estimate_tokens(system + user))
+                if lower is None:
+                    raise
+                logger.info("llm %s: output cap %d refused, retrying at %d", self.model, max_tokens, lower)
+                max_tokens = lower
         text = "".join(block.text for block in msg.content if getattr(block, "type", "") == "text")
-        return LLMResponse(text, msg.usage.input_tokens, msg.usage.output_tokens)
+        stop = getattr(msg, "stop_reason", None)
+        response = LLMResponse(
+            text,
+            msg.usage.input_tokens,
+            msg.usage.output_tokens,
+            finish_reason="length" if stop == "max_tokens" else stop,
+        )
+        _log_call(self.model, response, time.perf_counter() - start)
+        return response
 
 
 class OpenAIClient:
@@ -116,7 +222,9 @@ class OpenAIClient:
         self._default_headers = default_headers
         self._key_env = key_env
 
-    def complete(self, system: str, user: str, *, max_tokens: int = 2048) -> LLMResponse:
+    def complete(
+        self, system: str, user: str, *, max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    ) -> LLMResponse:
         if not self._api_key:
             raise LLMError(
                 f"{self._key_env} is not set. Set it, or pass api_key= to the client."
@@ -125,26 +233,60 @@ class OpenAIClient:
             import openai
         except ImportError as exc:  # pragma: no cover - optional dep
             raise LLMError("The 'openai' package is required. Install cleanframe-engine[llm].") from exc
-        kwargs: dict[str, Any] = {"api_key": self._api_key, "timeout": LLM_HTTP_TIMEOUT}
+        kwargs: dict[str, Any] = {
+            "api_key": self._api_key,
+            "timeout": _timeout(openai),
+            "max_retries": LLM_MAX_RETRIES,
+        }
         if self._base_url:
             kwargs["base_url"] = self._base_url
         if self._default_headers:
             kwargs["default_headers"] = self._default_headers
         client = openai.OpenAI(**kwargs)
-        resp = client.chat.completions.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        cap_param = "max_tokens"
+        start = time.perf_counter()
+        while True:
+            request: dict[str, Any] = {
+                "model": self.model, "messages": messages, cap_param: max_tokens,
+            }
+            try:
+                resp = client.chat.completions.create(**request)
+                break
+            except (openai.BadRequestError, openai.UnprocessableEntityError) as exc:
+                text = str(exc)
+                if cap_param == "max_tokens" and "max_completion_tokens" in text:
+                    # OpenAI's reasoning models refuse max_tokens and name the new field.
+                    cap_param = "max_completion_tokens"
+                    continue
+                lower = _lower_cap(text, max_tokens, _estimate_tokens(system + user))
+                if lower is None:
+                    raise
+                logger.info("llm %s: output cap %d refused, retrying at %d", self.model, max_tokens, lower)
+                max_tokens = lower
+        if not resp.choices:
+            # OpenRouter reports some upstream failures inside a 200 response.
+            error = (getattr(resp, "model_extra", None) or {}).get("error")
+            detail = f": {error.get('message', error)}" if isinstance(error, dict) else ""
+            raise LLMError(f"The provider returned no answer for {self.model}{detail}.")
+        choice = resp.choices[0]
         usage = resp.usage
-        return LLMResponse(
-            resp.choices[0].message.content or "",
+        details = getattr(usage, "completion_tokens_details", None)
+        extra = getattr(usage, "model_extra", None) or {}
+        cost = extra.get("cost")
+        response = LLMResponse(
+            choice.message.content or "",
             getattr(usage, "prompt_tokens", 0) or 0,
             getattr(usage, "completion_tokens", 0) or 0,
+            finish_reason=getattr(choice, "finish_reason", None),
+            reasoning_tokens=int(getattr(details, "reasoning_tokens", 0) or 0),
+            cost=float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
         )
+        _log_call(self.model, response, time.perf_counter() - start)
+        return response
 
 
 # ---------------------------------------------------------------------------
@@ -474,14 +616,33 @@ Each op is either a bare string or a single-key object, e.g. "strip_whitespace",
 {"parse_date": {"formats": ["%d/%m/%Y"]}}, {"remove_symbols": ["₹", ","]},
 {"cast": "float"}, {"normalize_values": {"BLR": "Bangalore"}}.
 
-Available ops: {ops}
+Column ops, with the only parameters each accepts in brackets: {ops}
+Whole-table ops, as top-level keys like "dedup" above: {frame_ops}
 
 Rules: prefer minimal, safe transforms; do NOT impute missing values; only propose a
-rename when it improves clarity; put ops in a sensible execution order."""
+rename when it improves clarity; put ops in a sensible execution order; use only the
+parameters listed; "validate" and "dedup" name a column by its final name (its
+rename_to, if it has one); a validation's "on_fail" is "quarantine", "warn" or "error"."""
+
+
+def _op_catalog(scope: str) -> str:
+    """``name[param, ...]`` for every op of ``scope`` an LLM plan may use."""
+    from .ops import OP_REGISTRY
+
+    out = []
+    for name in list_ops():
+        spec = OP_REGISTRY[name]
+        if spec.scope != scope or name in _LLM_BLOCKED_OPS:
+            continue
+        params = sorted(spec.known_params)
+        out.append(f"{name}[{', '.join(params)}]" if params else name)
+    return ", ".join(out)
 
 
 def build_prompt(metadata: dict) -> tuple[str, str]:
-    system = _SYSTEM_PROMPT.replace("{ops}", ", ".join(list_ops()))
+    system = _SYSTEM_PROMPT.replace("{ops}", _op_catalog("column")).replace(
+        "{frame_ops}", _op_catalog("frame")
+    )
     user = "Here is the dataset metadata. Produce the JSON recipe.\n\n" + json.dumps(
         metadata, indent=2, ensure_ascii=False
     )
@@ -513,16 +674,29 @@ _LLM_UNSAFE_ON_FAIL = frozenset({"drop", "null"})
 _DRY_RUN_ROWS = 200
 
 
-def _extract_json_object(text: str) -> str:
-    """Return the first top-level ``{...}`` object using a brace-depth scan.
+#: A reasoning block some servers put in the answer itself (Ollama, vLLM, LM Studio
+#: running DeepSeek-R1 / Qwen3). Its draft JSON is not the answer. An unclosed block
+#: (the cap cut it off) runs to the end.
+_THINK_RE = re.compile(r"<(think|thinking|reasoning)>.*?(?:</\1>|\Z)", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_json_object(text: str, *, close_unbalanced: bool = False) -> str:
+    """Return the first top-level ``{...}`` object using a bracket-depth scan.
 
     A greedy ``\\{.*\\}`` regex can swallow trailing prose or pick the wrong blob
-    when the model wraps JSON in commentary that also contains braces.
+    when the model wraps JSON in commentary that also contains braces. A
+    ``<think>`` block in the reply is skipped.
+
+    ``close_unbalanced`` repairs one common model slip: a reply that ends, outside any
+    string, with its last closing brackets missing (``{"a": {"b": 1}``). Callers pass it
+    only for a reply the model finished on its own; a reply cut off by the output cap
+    may end mid-value (``0.97`` -> ``0.9``) and is never completed.
     """
+    text = _THINK_RE.sub("", text)
     start = text.find("{")
     if start < 0:
         raise LLMError("LLM response contained no JSON object.")
-    depth = 0
+    stack: list[str] = []
     in_str = False
     escape = False
     for i, ch in enumerate(text[start:], start=start):
@@ -536,13 +710,56 @@ def _extract_json_object(text: str) -> str:
             continue
         if ch == '"':
             in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            if not stack:
                 return text[start : i + 1]
+    if close_unbalanced and stack and not in_str:
+        logger.info("closed %d unbalanced bracket(s) at the end of the model's reply", len(stack))
+        return text[start:].rstrip() + "".join(reversed(stack))
     raise LLMError("LLM response contained no complete JSON object.")
+
+
+#: Finish reasons that mean the model ended its reply itself (OpenAI-style, Anthropic).
+_FINISHED = frozenset({"stop", "end_turn", "stop_sequence"})
+
+
+def finished_on_its_own(response: Any) -> bool:
+    """Whether the provider says the model ended the reply itself (not the cap, not unknown)."""
+    return getattr(response, "finish_reason", None) in _FINISHED
+
+
+def _point_at_output_names(recipe: Recipe) -> None:
+    """Point validations and dedup keys that name a renamed column's *source* at its
+    output name.
+
+    Both run after renames, so ``{"column": "Email"}`` beside ``Email -> email`` was
+    skipped with a warning and the check silently did nothing. Models write it either
+    way. Each change is listed in ``recipe.meta["llm_renamed_refs"]``.
+    """
+    outputs = {c.output_name for c in recipe.columns}
+    renamed = {
+        c.source: c.output_name
+        for c in recipe.columns
+        if c.output_name != c.source and c.source not in outputs
+    }
+    if not renamed:
+        return
+    changed: list[str] = []
+    for rule in recipe.validations:
+        if rule.column in renamed:
+            changed.append(f"validation {rule.check}: {rule.column} -> {renamed[rule.column]}")
+            rule.column = renamed[rule.column]
+    for op in recipe.frame_ops:
+        subset = op.params.get("subset") if op.name == "dedup" else None
+        if isinstance(subset, list) and any(c in renamed for c in subset):
+            changed.append(f"dedup subset: {subset} -> {[renamed.get(c, c) for c in subset]}")
+            op.params["subset"] = [renamed.get(c, c) for c in subset]
+    if changed:
+        recipe.meta["llm_renamed_refs"] = changed
 
 
 def _finalize_llm_recipe(recipe: Recipe, *, mode: Mode) -> Recipe:
@@ -554,6 +771,7 @@ def _finalize_llm_recipe(recipe: Recipe, *, mode: Mode) -> Recipe:
     """
     from .planner import _finalize_ops
 
+    _point_at_output_names(recipe)
     blocked = _LLM_BLOCKED_OPS
     removed: list[str] = []
     for col in recipe.columns:
@@ -662,19 +880,20 @@ def _sanitize_llm_recipe(data: Any) -> list[str]:
     return dropped
 
 
-def parse_recipe_json(text: str) -> Recipe:
+def parse_recipe_json(text: str, *, close_unbalanced: bool = False) -> Recipe:
     """Extract and validate a Recipe from the model's response.
 
     Validation runs through :meth:`Recipe.from_dict`, so an unknown op or malformed
     structure never reaches the data. Steps the model wrote that cannot load are
     dropped and listed in ``recipe.meta["llm_dropped"]`` rather than discarding the
-    whole plan.
+    whole plan. ``close_unbalanced`` (see :func:`_extract_json_object`) is for a reply
+    the model finished on its own.
     """
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")
         text = text[text.find("{") :] if "{" in text else text
-    blob = _extract_json_object(text)
+    blob = _extract_json_object(text, close_unbalanced=close_unbalanced)
     try:
         data = json.loads(blob)
     except json.JSONDecodeError as exc:
@@ -709,7 +928,7 @@ class LLMPlanner:
         *,
         exposure: LLMExposure | str = LLMExposure.METADATA,
         max_tokens_budget: int | None = None,
-        max_output_tokens: int = 2048,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         fallback: Any | None = "rules",
     ) -> None:
         self.client = client
@@ -780,18 +999,26 @@ class LLMPlanner:
     def _plan_via_llm(self, df, profile, issues, schema, *, mode: Mode) -> Recipe:
         metadata = build_metadata(df, profile, issues, schema, self.exposure)
         system, user = build_prompt(metadata)
+        cap = self.max_output_tokens
         if self.max_tokens_budget is not None:
-            estimate = _estimate_tokens(system) + _estimate_tokens(user) + self.max_output_tokens
-            if estimate > self.max_tokens_budget:
+            # The answer may use whatever the prompt leaves of the budget, so a
+            # generous default cap never turns a sensible budget into a refusal.
+            prompt = _estimate_tokens(system) + _estimate_tokens(user)
+            room = self.max_tokens_budget - prompt
+            if room < _MIN_ANSWER_TOKENS:
                 raise BudgetExceeded(
-                    f"Estimated {estimate} tokens exceeds max_tokens_budget={self.max_tokens_budget}."
+                    f"The prompt alone is about {prompt} tokens, which leaves {max(room, 0)} of "
+                    f"max_tokens_budget={self.max_tokens_budget} for the answer "
+                    f"(at least {_MIN_ANSWER_TOKENS} are needed)."
                 )
-        response = self.client.complete(system, user, max_tokens=self.max_output_tokens)
+            cap = min(cap, room)
+        response = self.client.complete(system, user, max_tokens=cap)
         self.last_response = response  # noqa: RUF100
         if self.max_tokens_budget is not None and response.total_tokens > self.max_tokens_budget:
             raise BudgetExceeded(
                 f"Used {response.total_tokens} tokens, over max_tokens_budget={self.max_tokens_budget}."
             )
+        check_answer(response, cap)
         if self.exposure is LLMExposure.SAMPLE:
             sent = [c["name"] for c in metadata["columns"] if c.get("example_values")]
             warnings.warn(
@@ -801,7 +1028,18 @@ class LLMPlanner:
                 CleanFrameWarning,
                 stacklevel=2,
             )
-        recipe = _finalize_llm_recipe(parse_recipe_json(response.text), mode=mode)
+        try:
+            parsed = parse_recipe_json(
+                response.text, close_unbalanced=finished_on_its_own(response)
+            )
+        except LLMError as exc:
+            if getattr(response, "finish_reason", None) == "length":
+                raise LLMError(
+                    f"The answer was cut off at the {cap}-token output cap ({exc}). "
+                    "Raise max_output_tokens."
+                ) from exc
+            raise
+        recipe = _finalize_llm_recipe(parsed, mode=mode)
         blocked = recipe.meta.get("llm_blocked_ops")
         if blocked:
             warnings.warn(
@@ -851,6 +1089,10 @@ class LLMPlanner:
         return self.fallback
 
 
+#: The smallest output cap worth sending under ``max_tokens_budget``.
+_MIN_ANSWER_TOKENS = 1024
+
+
 def _estimate_tokens(text: str) -> int:
     # ~4 chars/token is a good enough pre-flight estimate for budgeting.
     return max(1, len(text) // 4)
@@ -871,4 +1113,7 @@ __all__ = [
     "build_prompt",
     "parse_recipe_json",
     "value_sketches",
+    "check_answer",
+    "finished_on_its_own",
+    "DEFAULT_MAX_OUTPUT_TOKENS",
 ]

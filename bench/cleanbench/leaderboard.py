@@ -15,6 +15,7 @@ _FAMILY_NAMES = {ALIAS: "alias", MERGE: "typo merge", NULL: "null token", SCHEMA
 PENDING = [
     ("TypeSafe Jev (direct)", "TYPESAFE_API_KEY", "typesafe/jev-latest"),
     ("TypeSafe Jev via OpenRouter", "OPENROUTER_API_KEY", "openrouter/typesafe/jev-1.14"),
+    ("Liquid AI d1-ultra via OpenRouter", "OPENROUTER_API_KEY", "openrouter/liquid/d1-ultra"),
     ("Claude (LLM adapter)", "ANTHROPIC_API_KEY", "anthropic/claude-sonnet-4-6"),
     ("OpenAI (LLM adapter)", "OPENAI_API_KEY", "openai/gpt-4o-mini"),
     ("Open System One model, self-hosted", "SYSTEMONE_BASE_URL", "systemone/<model>"),
