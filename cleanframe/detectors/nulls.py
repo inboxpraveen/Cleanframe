@@ -16,11 +16,12 @@ import pandas as pd
 
 from .._util import is_string_like, looks_like_code_values, sample_non_null
 from ..issues import Issues
-from ..ops import DEFAULT_NA_TOKENS
+from ..ops import DEFAULT_NA_TOKENS, EXCEL_ERROR_TOKENS
 from ..types import Op, Severity
 from .base import DetectorContext, detector
 
 _NA_LOOKUP = {t.strip().casefold() for t in DEFAULT_NA_TOKENS if t}
+_EXCEL_ERRORS = {t.casefold() for t in EXCEL_ERROR_TOKENS}
 #: Tokens that are frequently *legitimate* data (an allergy of "none", a status of
 #: "unknown", a placeholder "-"). We surface these for review but do NOT auto-convert
 #: them below strict review, so a real category is never silently turned into NaN.
@@ -53,12 +54,29 @@ def detect_nulls(series: pd.Series, ctx: DetectorContext) -> Issues:
             # Unambiguous null tokens ('', 'n/a', 'null', …) — safe to convert.
             if unambiguous:
                 n = sum(disguised[t] for t in unambiguous)
+                errors = [t for t in unambiguous if t.strip().casefold() in _EXCEL_ERRORS]
+                plain = [t for t in unambiguous if t not in errors]
+                if not errors:
+                    message = f"{n} value(s) are disguised nulls ({', '.join(map(repr, plain[:4]))})"
+                elif not plain:
+                    message = (
+                        f"{n} value(s) are Excel error values ({', '.join(map(repr, errors[:4]))}): "
+                        "formulas that failed in the source workbook, not data"
+                    )
+                else:
+                    message = (
+                        f"{n} value(s) are disguised nulls ({', '.join(map(repr, plain[:3]))}) "
+                        f"or Excel error values ({', '.join(map(repr, errors[:3]))})"
+                    )
+                evidence = {"count": n, "tokens": {t: disguised[t] for t in unambiguous}}
+                if errors:
+                    evidence["excel_errors"] = errors
                 issues.add(
                     "disguised_nulls",
-                    f"{n} value(s) are disguised nulls ({', '.join(map(repr, unambiguous[:4]))})",
+                    message,
                     severity=Severity.WARNING,
                     confidence=1.0,
-                    evidence={"count": n, "tokens": {t: disguised[t] for t in unambiguous}},
+                    evidence=evidence,
                     ops=[Op("to_na", {"tokens": unambiguous})],
                 )
             # Ambiguous tokens that may be legitimate data — report, don't auto-convert.

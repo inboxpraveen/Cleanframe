@@ -154,7 +154,7 @@ Default `to_na` tokens (matched case-insensitively after trimming): empty string
 
 | Op | Parameters | Notes |
 |----|------------|-------|
-| `dedup` | `subset`, `keep`, `ignore_case` | `subset` is a column name or list (omitted = all columns); `keep` is `first` (default), `last` or `false`; `ignore_case` defaults `false` and also ignores surrounding whitespace |
+| `dedup` | `subset`, `keep`, `ignore_case` | `subset` is a column name or list (omitted = all columns); `keep` is `first` (default), `last` or `false`; `ignore_case` defaults `false` and also ignores surrounding whitespace. With a `subset`, a row whose key columns are all missing or blank is never a duplicate: two customers without an email are not the same customer |
 | `drop_columns` | `columns` | A name or a list: `drop_columns: [a, b]`. Absent columns are ignored |
 
 `dedup` is serialised at the **top level** — that is what `Recipe.to_dict` emits,
@@ -244,6 +244,18 @@ to require a value.
 Stored so `apply_recipe` can detect drift. Includes column names, dtypes, row
 count, and a sample hash. Do not hand-edit unless you know why.
 
+When some dates in a `parse_date` column already fail to parse while the recipe is
+learned (an impossible `31/02/2024`, an Excel serial `45200`, a `TBD`), the fingerprint
+also records their *shapes* and their share of the column, never the values:
+
+```yaml
+source_fingerprint:
+  unparsed_date_patterns:
+    Signup Date: {"9+": 0.12, "9+/9+/9+": 0.02, "A+": 0.05}
+```
+
+See [Date-format drift](#date-format-drift).
+
 ## `read:` section (v2)
 
 Optional top-level block recording how the source slice was read, so
@@ -305,6 +317,17 @@ sheets:
 Load with `load_recipe(path)` (auto-detects the `sheets:` block) or
 `WorkbookRecipe.load(path)`. `Recipe.from_dict` rejects a `sheets:` doc and
 points to `WorkbookRecipe`/`load_recipe`.
+
+## Date-format drift
+
+A column the recipe parses with `parse_date` formats is checked on replay. Values that
+match none of the formats are a `format_drift` finding (exit `3`) when their shape is new
+(`2024.06.30` against `%d/%m/%Y`), or when a shape the recipe was learned with has become
+far more common: at least 3 values, over twice its learned share plus 5 points. That is
+how a source switching from DD/MM to MM/DD shows up. Replaying a recipe on the file it was
+learned from never reports drift. A recipe saved before 0.6.0 has no learned shapes, so
+every unparsed date counts, as before. `suggest --update` re-learns the shapes after it
+patches the formats.
 
 ## Number-format drift
 

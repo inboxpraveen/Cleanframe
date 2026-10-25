@@ -22,8 +22,11 @@ from __future__ import annotations
 
 import codecs
 import csv as _csv
+import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .errors import CleanFrameError
 
@@ -32,6 +35,8 @@ _DELIMITER_CANDIDATES = (",", ";", "\t", "|")
 _HEADER_SAMPLE_LINES = 20
 #: Only the first chunk is read for detection so a multi-GB file isn't loaded to RAM.
 _DETECT_BYTES = 65536
+#: Excel's delimiter hint line, optionally quoted: ``sep=;`` / ``"sep=,"``.
+_SEP_DIRECTIVE_RE = re.compile(r'\s*"?sep=([,;\t|])"?[,;\t|]*\s*', re.IGNORECASE)
 
 
 @dataclass
@@ -230,19 +235,59 @@ def suggest_header_row_from_counts(counts: list[int]) -> int | None:
     return None
 
 
-def suggest_header_row(lines: list[str], delimiter: str = ",") -> int | None:
-    """Guess which physical line holds the header when title rows sit above it.
+def _populated(value: Any) -> bool:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return False
+    return bool(str(value).strip())
 
-    Returns the 0-based line index of the first line that has at least two populated
-    fields and as many as the modal width of the lines after it, or ``None`` when line 0
-    already is that line (no title rows) or nothing fits. A suggestion only — callers
-    put it in an error/warning message and never apply it.
+
+def _is_label(value: Any) -> bool:
+    """A cell that can be a column name: text with a letter in it (not a number or date)."""
+    return isinstance(value, str) and any(ch.isalpha() for ch in value)
+
+
+def _label_row(row: list[Any]) -> bool:
+    cells = [v for v in row if _populated(v)]
+    return len(cells) >= 2 and all(_is_label(v) for v in cells)
+
+
+def suggest_header_row_from_rows(rows: list[list[Any]]) -> int | None:
+    """Guess which row holds the header when title rows sit above it.
+
+    The first row with a number or date in it is data, so the header is the last row of
+    text labels above it. That also holds for a header with merged or blank cells,
+    which has fewer filled cells than the data below it (counting filled cells alone
+    picked a data row there). Tables of text only fall back to the width rule of
+    :func:`suggest_header_row_from_counts`. Returns ``None`` when row 0 is the header
+    or nothing fits. A suggestion only: callers put it in a message, never apply it.
     """
+    widths = [sum(1 for v in row if _populated(v)) for row in rows]
+    for i, row in enumerate(rows):
+        if widths[i] < 2 or _label_row(row):
+            continue
+        labels = [j for j in range(i) if _label_row(rows[j])]
+        if not labels or 2 * widths[labels[-1]] < widths[i]:
+            return None  # no header row of labels above the first data row
+        return labels[-1] or None
+    return suggest_header_row_from_counts(widths)
+
+
+def header_spans_rows(rows: list[list[Any]], at: int) -> bool:
+    """Whether the row above header row ``at`` holds more of the header (merged cells)."""
+    if at < 1 or at >= len(rows) or not _label_row(rows[at - 1]):
+        return False
+    above = sum(1 for v in rows[at - 1] if _populated(v))
+    return 2 * above >= sum(1 for v in rows[at] if _populated(v))
+
+
+def suggest_header_row(lines: list[str], delimiter: str = ",") -> int | None:
+    """Guess which physical line of a text file holds the header (see
+    :func:`suggest_header_row_from_rows`)."""
     try:
-        rows = list(_csv.reader(lines, delimiter=delimiter))
+        rows: list[list[Any]] = list(_csv.reader(lines, delimiter=delimiter))
     except _csv.Error:
         return None
-    return suggest_header_row_from_counts([sum(1 for c in row if c.strip()) for row in rows])
+    return suggest_header_row_from_rows(rows)
 
 
 def detect_csv_options(
@@ -265,16 +310,25 @@ def detect_csv_options(
     text, encoding = _decode(path, encoding)
     lines = text.splitlines()
 
+    directive: str | None = None
     if header_row is not None:
         skip = header_row
     else:
         skip = 0
         while skip < len(lines) and not lines[skip].strip():
             skip += 1
+        # Excel writes (and reads) a first line "sep=;" naming the delimiter. It is
+        # an instruction, not data: honour it and start at the next line.
+        match = _SEP_DIRECTIVE_RE.fullmatch(lines[skip]) if skip < len(lines) else None
+        if match:
+            directive = match.group(1)
+            skip += 1
 
     sample = [ln for ln in lines[skip : skip + _HEADER_SAMPLE_LINES] if ln.strip()]
     if sep is not None:
         delimiter = sep
+    elif directive is not None:
+        delimiter = directive
     elif path.suffix.lower() == ".tsv":  # tab by definition — don't second-guess it
         delimiter = "\t"
     else:
@@ -289,9 +343,13 @@ def detect_csv_options(
         )
     elif encoding not in ("utf-8", "utf-8-sig"):
         report.notes.append(f"decoded as {encoding} (file was not valid UTF-8)")
-    if delimiter not in (",", "\t"):
+    if delimiter not in (",", "\t") and directive is None:
         report.notes.append(f"detected delimiter {delimiter!r} (not a comma)")
-    if skip and header_row is None:
+    if directive is not None:
+        report.notes.append(f"used the file's Excel 'sep={directive}' line as the delimiter and skipped it")
+        if skip > 1:
+            report.notes.append(f"skipped {skip - 1} leading blank line(s) before it")
+    elif skip and header_row is None:
         report.notes.append(f"skipped {skip} leading blank line(s) before the header")
 
     options: dict = {"encoding": "utf-8-sig" if encoding == "utf-8" else encoding}
@@ -307,4 +365,4 @@ def is_csv_family(path: str | Path) -> bool:
 
 
 __all__ = ["ReadReport", "detect_csv_options", "is_csv_family", "suggest_header_row",
-           "suggest_header_row_from_counts"]
+           "suggest_header_row_from_counts", "suggest_header_row_from_rows", "header_spans_rows"]

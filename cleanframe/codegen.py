@@ -194,6 +194,14 @@ def _dedup_key_column(col, ignore_case=False):
     return col.map(fn)
 
 
+def _has_key_value(col):
+    present = col.notna()
+    if pd.api.types.is_object_dtype(col.dtype) or pd.api.types.is_string_dtype(col.dtype):
+        blank = col.map(lambda v: isinstance(v, str) and not v.strip())
+        present &= ~blank.astype(bool)
+    return present
+
+
 def _is_na(v):
     if v is None:
         return True
@@ -716,7 +724,11 @@ def generate_code(
             lines.append(
                 f"    _key = df[{cols_expr}].apply(_dedup_key_column, ignore_case={ic!r})"
             )
-            lines.append(f"    df = df[~_key.duplicated(keep={keep!r})]")
+            lines.append(f"    _dup = _key.duplicated(keep={keep!r})")
+            if subset:
+                # rows with no key value are never duplicates (cleanframe.ops.dedup)
+                lines.append(f"    _dup &= df[{cols_expr}].apply(_has_key_value).any(axis=1)")
+            lines.append("    df = df[~_dup]")
         elif op.name == "drop_columns":
             lines.append(f"    df = df.drop(columns={op.params.get('columns', [])!r}, errors='ignore')")
         else:

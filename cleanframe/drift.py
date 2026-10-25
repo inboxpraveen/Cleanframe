@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 import pandas as pd
 
@@ -228,6 +229,144 @@ def _detect_content_drift(df: pd.DataFrame, fp: dict, report: DriftReport) -> No
         )
 
 
+#: Fingerprint key holding, per ``parse_date`` column, the shapes of the values the
+#: recipe's formats could not parse when it was learned, with their share of the
+#: column (``{"Signup Date": {"9+": 0.12}}``). A replay of the same data then reports
+#: no drift; only a new shape, or a known one that became far more common, does.
+#: Shapes are structural sketches (digits -> 9, letters -> A), never values.
+UNPARSED_DATES_KEY = "unparsed_date_patterns"
+_MAX_LEARNED_SHAPES = 20
+_EXAMPLES_PER_SHAPE = 3
+
+
+@dataclass
+class UnparsedDates:
+    """Values a ``parse_date`` op's formats do not parse, counted by shape."""
+
+    counts: dict[str, int] = field(default_factory=dict)
+    examples: dict[str, list[str]] = field(default_factory=dict)
+    non_null: int = 0
+
+    def add(self, other: UnparsedDates) -> None:
+        self.non_null += other.non_null
+        for shape, n in other.counts.items():
+            self.counts[shape] = self.counts.get(shape, 0) + n
+            kept = self.examples.setdefault(shape, [])
+            kept.extend(other.examples.get(shape, [])[: _EXAMPLES_PER_SHAPE - len(kept)])
+
+
+def _date_ops(recipe: Recipe):
+    for col_recipe in recipe.columns:
+        for op in col_recipe.ops:
+            if op.name == "parse_date" and op.params.get("formats"):
+                yield col_recipe.source, op
+
+
+def unparsed_dates(series: pd.Series, op: Any) -> UnparsedDates:
+    """Count the values of ``series`` that ``op``'s formats do not parse, by shape."""
+    values = series.dropna()
+    out = UnparsedDates(non_null=int(len(values)))
+    if values.empty:
+        return out
+    parsed = parse_dates_to_datetime(
+        values,
+        list(op.params.get("formats") or []),
+        dayfirst=bool(op.params.get("dayfirst", False)),
+        yearfirst=bool(op.params.get("yearfirst", False)),
+    )
+    unmatched = values[parsed.isna().to_numpy()]
+    if unmatched.empty:
+        return out
+    # One sketch per distinct value: a column of a million identical bad cells is cheap.
+    for value, n in unmatched.astype(str).value_counts(sort=False).items():
+        shape = _sketch(str(value))
+        out.counts[shape] = out.counts.get(shape, 0) + int(n)
+        kept = out.examples.setdefault(shape, [])
+        if len(kept) < _EXAMPLES_PER_SHAPE:
+            kept.append(str(value))
+    return out
+
+
+def learn_unparsed_dates(df: pd.DataFrame, recipe: Recipe) -> None:
+    """Record in the fingerprint what the recipe's date formats leave unparsed today.
+
+    Called once when a recipe is planned (and again when it is patched for drift), so
+    the values a user already accepted as unparseable are not reported as drift on
+    every replay. Leaves the fingerprint untouched when every date parses.
+    """
+    fp = recipe.source_fingerprint
+    if not isinstance(fp, dict):
+        return
+    learned: dict[str, dict[str, float]] = {}
+    for src, op in _date_ops(recipe):
+        if src not in df.columns:
+            continue
+        seen = unparsed_dates(df[src], op)
+        if not seen.counts or not seen.non_null:
+            continue
+        top = sorted(seen.counts.items(), key=lambda kv: (-kv[1], kv[0]))[:_MAX_LEARNED_SHAPES]
+        learned[str(src)] = {shape: round(n / seen.non_null, 4) for shape, n in sorted(top)}
+    if learned:
+        fp[UNPARSED_DATES_KEY] = learned
+    else:
+        fp.pop(UNPARSED_DATES_KEY, None)
+
+
+def _learned_shapes(recipe: Recipe, src: str) -> dict[str, float]:
+    fp = recipe.source_fingerprint if isinstance(recipe.source_fingerprint, dict) else {}
+    raw = (fp.get(UNPARSED_DATES_KEY) or {}).get(str(src)) or {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for shape, share in raw.items():
+        try:
+            out[str(shape)] = float(share)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def format_drift_finding(src: str, seen: UnparsedDates, learned: dict[str, float]) -> DriftFinding | None:
+    """The finding for unparsed dates, or ``None`` when they match what was learned.
+
+    A shape the recipe never met is a new format. A known shape counts again only
+    when it is much more common than it was (at least 3 values, and over twice its
+    learned share plus 5 points): a source switching from DD/MM to MM/DD shows up
+    that way, while the same stray ``31/02/2024`` in every file does not.
+    """
+    if not seen.counts or not seen.non_null:
+        return None
+    new = {s: n for s, n in seen.counts.items() if s not in learned}
+    grown = {
+        s: n
+        for s, n in seen.counts.items()
+        if s in learned and n >= 3 and n / seen.non_null > max(2 * learned[s], learned[s] + 0.05)
+    }
+    flagged = {**grown, **new}
+    if not flagged:
+        return None
+    shapes = sorted(flagged, key=lambda s: (-flagged[s], s))
+    examples = [e for s in shapes for e in seen.examples.get(s, [])][:_EXAMPLES_PER_SHAPE]
+    count = sum(flagged.values())
+    if new:
+        message = f'{count} value(s) in "{src}" match no allowed date format (new: {examples[0]!r})'
+        suggestion = f"New pattern {sorted(new)[0]!r}; add its format to the recipe."
+    else:
+        message = (
+            f'{count} value(s) in "{src}" match no allowed date format - far more than when '
+            f"the recipe was learned (e.g. {examples[0]!r})"
+        )
+        suggestion = "Check whether the source changed its date format, then re-plan or patch."
+    return DriftFinding(
+        kind="format_drift",
+        message=message,
+        severity=Severity.WARNING,
+        column=src,
+        suggestion=suggestion,
+        evidence={"count": int(count), "examples": examples, "sketches": sorted(flagged)},
+    )
+
+
 def _detect_format_drift(df: pd.DataFrame, recipe: Recipe, report: DriftReport) -> None:
     for col_recipe in recipe.columns:
         src = col_recipe.source
@@ -236,42 +375,12 @@ def _detect_format_drift(df: pd.DataFrame, recipe: Recipe, report: DriftReport) 
         for op in col_recipe.ops:
             if op.name == "parse_number":
                 _detect_number_drift(df[src], src, op.params, report)
-                continue
-            if op.name != "parse_date":
-                continue
-            formats = op.params.get("formats")
-            if not formats:
-                continue
-            series = df[src].dropna()
-            if series.empty:
-                continue
-            parsed = parse_dates_to_datetime(
-                series,
-                list(formats),
-                dayfirst=bool(op.params.get("dayfirst", False)),
-                yearfirst=bool(op.params.get("yearfirst", False)),
-            )
-            unmatched = series[parsed.isna()]
-            if len(unmatched):
-                examples = [str(v) for v in unmatched.head(3).tolist()]
-                sketches = sorted({_sketch(e) for e in examples})
-                report.findings.append(
-                    DriftFinding(
-                        kind="format_drift",
-                        message=(
-                            f'{len(unmatched)} value(s) in "{src}" match no allowed date format '
-                            f"(new: {examples[0]!r})"
-                        ),
-                        severity=Severity.WARNING,
-                        column=src,
-                        suggestion=f"New pattern {sketches[0]!r}; add its format to the recipe.",
-                        evidence={
-                            "count": int(len(unmatched)),
-                            "examples": examples,
-                            "sketches": sketches,
-                        },
-                    )
+            elif op.name == "parse_date" and op.params.get("formats"):
+                finding = format_drift_finding(
+                    src, unparsed_dates(df[src], op), _learned_shapes(recipe, src)
                 )
+                if finding is not None:
+                    report.findings.append(finding)
 
 
 #: Share of digit-bearing values a ``parse_number`` op may reject before the column

@@ -64,6 +64,35 @@ def detect_unicode(series: pd.Series, ctx: DetectorContext) -> Issues:
     return issues
 
 
+#: ``="00123"``: how exports force Excel to keep a value as text (leading zeros, long
+#: ids). Outside Excel it is just a wrapper around the value.
+_EXCEL_TEXT_RE = re.compile(r'^="([^"]*)"$')
+_EXCEL_TEXT_PATTERN = r'^="([^"]*)"$'
+
+
+@detector("excel_text", priority=9)
+def detect_excel_text(series: pd.Series, ctx: DetectorContext) -> Issues:
+    """Unwrap Excel's ``="value"`` text formulas when most of a column uses them."""
+    issues = Issues()
+    cp = ctx.column_profile
+    if cp is None or cp.count == 0 or not is_string_like(series):
+        return issues
+    strings = [v for v in sample_non_null(series) if isinstance(v, str)]
+    wrapped = [v for v in strings if _EXCEL_TEXT_RE.match(v)]
+    if not wrapped or 2 * len(wrapped) < len(strings):
+        return issues
+    issues.add(
+        "excel_text_formula",
+        f'{len(wrapped)} value(s) are wrapped as Excel text formulas (="..."), the way '
+        "exports keep leading zeros in Excel",
+        severity=Severity.WARNING,
+        confidence=0.9,
+        evidence={"count": len(wrapped), "examples": _cap_examples([repr(v) for v in wrapped])},
+        ops=[Op("replace", {"pattern": _EXCEL_TEXT_PATTERN, "repl": r"\1", "regex": True})],
+    )
+    return issues
+
+
 @detector("whitespace", priority=10)
 def detect_whitespace(series: pd.Series, ctx: DetectorContext) -> Issues:
     """Flag leading/trailing or repeated internal whitespace and propose a trim."""

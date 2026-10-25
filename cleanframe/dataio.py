@@ -20,6 +20,7 @@ import csv as _csv
 import os
 import re as _re
 import warnings
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ import pandas as pd
 
 from ._util import (
     check_output_target,
+    is_string_like,
     looks_like_code_values,
     sanitize_dataframe_for_csv,
     sanitize_dataframe_for_spreadsheet,
@@ -150,6 +152,16 @@ def _check_csv_header(path: Path, encoding: str, sep: str | None, blank_lines: i
         return
     if not line.strip():
         return
+    from .readfix import _SEP_DIRECTIVE_RE
+
+    directive = _SEP_DIRECTIVE_RE.fullmatch(line.rstrip("\r\n"))
+    if directive:
+        found = directive.group(1)
+        raise CleanFrameError(
+            f"{path.name} starts with Excel's 'sep={found}' line, which names the delimiter. "
+            f"Pass header_row={blank_lines + 1} and sep={found!r} (CLI --header-row "
+            f"{blank_lines + 1} --sep '{found}'); clean() and report() handle it for you."
+        )
     fields = next(_csv.reader([line.rstrip("\r\n")], delimiter=sep or ","), None)
     if not fields or len(fields) < 2:
         hint = _header_hint(path, encoding, sep, blank_lines)
@@ -190,8 +202,9 @@ def _check_csv_header(path: Path, encoding: str, sep: str | None, blank_lines: i
 _SCAN_ROWS = 100_000
 _NUL_CHUNK = 1 << 20
 _FOOTER_RE = _re.compile(r"(?:grand\s+total|sub[\s-]?total|total)s?\s*:?", _re.IGNORECASE)
-#: Workbooks above this size skip the (advisory) formula/merged-cell scan.
-_STRUCTURE_SCAN_BYTES = 25 * 1024 * 1024
+#: Workbooks above this size skip the (advisory) formula/merged-cell scan. The scan
+#: streams the sheet XML, so it costs a fraction of pandas' own read of the file.
+_STRUCTURE_SCAN_BYTES = 200 * 1024 * 1024
 
 
 def _refuse_nul_bytes(path: Path, encoding: str) -> None:
@@ -270,52 +283,125 @@ def _warn_csv_shape(path: Path, encoding: str, sep: str | None, blank_lines: int
         )
 
 
+def _sheet_parts(archive: Any) -> dict[str, str]:
+    """Sheet name -> worksheet XML part inside an .xlsx/.xlsm archive."""
+    import posixpath
+    import xml.etree.ElementTree as ET
+
+    def local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    targets = {}
+    for rel in ET.fromstring(archive.read("xl/_rels/workbook.xml.rels")):
+        target = rel.get("Target", "")
+        part = target.lstrip("/") if target.startswith("/") else posixpath.normpath("xl/" + target)
+        targets[rel.get("Id")] = part
+    parts = {}
+    for el in ET.fromstring(archive.read("xl/workbook.xml")).iter():
+        if local(el.tag) == "sheet":
+            rid = next((v for k, v in el.attrib.items() if local(k) == "id"), None)
+            if rid in targets:
+                parts[el.get("name", "")] = targets[rid]
+    return parts
+
+
+_FORMULA_TAG_RE = _re.compile(rb"<(?:\w+:)?f[\s>/]")
+_MERGE_TAG_RE = _re.compile(rb"<(?:\w+:)?mergeCell[\s/>]")
+_TAG_OVERLAP = 32
+
+
+def _count_tags(archive: Any, part: str) -> tuple[bool, int]:
+    """``(any formula tag, merged ranges)`` from the raw XML bytes - no parsing."""
+    has_formula = False
+    merged = 0
+    carry = b""
+    with archive.open(part) as fh:
+        while True:
+            chunk = fh.read(1 << 20)
+            buf = carry + chunk
+            # Count only matches that start before the overlap, which the next chunk
+            # re-reads; at the end of the part, count everything.
+            limit = len(buf) if not chunk else max(0, len(buf) - _TAG_OVERLAP)
+            merged += sum(1 for m in _MERGE_TAG_RE.finditer(buf) if m.start() < limit)
+            has_formula = has_formula or bool(_FORMULA_TAG_RE.search(buf))
+            if not chunk:
+                return has_formula, merged
+            carry = buf[limit:]
+
+
+def _scan_sheet_xml(archive: Any, part: str) -> tuple[int, int]:
+    """``(uncached formula cells, merged ranges)`` of one worksheet, streamed.
+
+    A formula cell is uncached when its ``<v>`` is missing or empty (openpyxl and
+    other writers leave it so); a cached empty-string result (``t="str"``) is not.
+    A sheet without formulas - most data exports - only gets a byte scan; otherwise
+    parsed rows are dropped as the parse goes, so memory stays flat on any sheet size.
+    """
+    import xml.etree.ElementTree as ET
+
+    has_formula, merged = _count_tags(archive, part)
+    if not has_formula:
+        return 0, merged
+    uncached = 0
+    rows = None  # <sheetData>, the parent every parsed row hangs off
+    with archive.open(part) as fh:
+        for event, el in ET.iterparse(fh, events=("start", "end")):
+            tag = el.tag.rsplit("}", 1)[-1]
+            if event == "start":
+                if tag == "sheetData":
+                    rows = el
+                continue
+            if tag == "c":
+                formula = value = None
+                for child in el:
+                    name = child.tag.rsplit("}", 1)[-1]
+                    if name == "f":
+                        formula = child
+                    elif name == "v":
+                        value = child
+                if formula is not None and el.get("t") != "str" and not (
+                    value is not None and value.text
+                ):
+                    uncached += 1
+            elif tag == "row" and rows is not None:
+                rows.clear()
+    return uncached, merged
+
+
 def _warn_excel_structure(path: Path, sheet_names: list[str]) -> None:
     """Warn about cells pandas cannot see: uncached formulas and merged ranges.
 
     pandas reads cached formula results, so a formula that was never calculated (a
     file written by a script, never opened in Excel) reads as empty; a merged range
     keeps its value only in the top-left cell. Both look like ordinary missing data.
-    Advisory only: any failure here is swallowed.
+    The sheet XML is streamed straight from the archive: loading the workbook in
+    openpyxl took 44 s and 1.6 GB for a 9 MB file. Advisory only: any failure here
+    is swallowed.
     """
     if path.suffix.lower() not in (".xlsx", ".xlsm"):
         return
+    notes: list[str] = []
     try:
         if path.stat().st_size > _STRUCTURE_SCAN_BYTES:
             return
-        import openpyxl
-
-        formulas = openpyxl.load_workbook(path, data_only=False)
-        cached = openpyxl.load_workbook(path, data_only=True)
+        with zipfile.ZipFile(path) as archive:
+            parts = _sheet_parts(archive)
+            for name in sheet_names:
+                if name not in parts:
+                    continue
+                uncached, merged = _scan_sheet_xml(archive, parts[name])
+                if uncached:
+                    notes.append(
+                        f"sheet {name!r}: {uncached} formula cell(s) have no cached value "
+                        "(the workbook was never calculated) and read as empty"
+                    )
+                if merged:
+                    notes.append(
+                        f"sheet {name!r}: {merged} merged range(s) - only the top-left cell "
+                        "of each keeps its value, the rest read as empty"
+                    )
     except Exception:  # noqa: BLE001 - advisory
         return
-    notes: list[str] = []
-    try:
-        for name in sheet_names:
-            if name not in formulas.sheetnames:
-                continue
-            ws, wc = formulas[name], cached[name]
-            merged = len(ws.merged_cells.ranges)
-            uncached = 0
-            for row in ws.iter_rows():
-                for cell in row:
-                    if cell.data_type == "f" and wc[cell.coordinate].value is None:
-                        uncached += 1
-            if uncached:
-                notes.append(
-                    f"sheet {name!r}: {uncached} formula cell(s) have no cached value "
-                    "(the workbook was never calculated) and read as empty"
-                )
-            if merged:
-                notes.append(
-                    f"sheet {name!r}: {merged} merged range(s) - only the top-left cell "
-                    "of each keeps its value, the rest read as empty"
-                )
-    except Exception:  # noqa: BLE001 - advisory
-        return
-    finally:
-        formulas.close()
-        cached.close()
     if notes:
         warnings.warn(
             f"CleanFrame: {path.name} has cells pandas cannot read as data - "
@@ -332,20 +418,62 @@ def _warn_excel_title_rows(path: Path, sheet, df: pd.DataFrame) -> None:
     if len(cols) < 2 or sum(c.startswith("Unnamed:") for c in cols) * 2 < len(cols):
         return
     try:
-        from .readfix import suggest_header_row_from_counts
+        from .readfix import header_spans_rows, suggest_header_row_from_rows
 
         raw = pd.read_excel(path, sheet_name=sheet, header=None, nrows=40)
-        at = suggest_header_row_from_counts([int(n) for n in raw.notna().sum(axis=1)])
+        rows = raw.astype(object).where(raw.notna(), None).values.tolist()
+        at = suggest_header_row_from_rows(rows)
+        spans = bool(at) and header_spans_rows(rows, int(at or 0))
     except Exception:  # noqa: BLE001 - advisory
         return
     if at:
+        merged = (
+            f" The header seems to span rows {at} and {at + 1} (merged cells): row {at + 1} "
+            "becomes the column names, so rename the columns whose name was in the row above."
+            if spans
+            else ""
+        )
         warnings.warn(
             f"CleanFrame: most column names in {path.name} are blank ('Unnamed: N') - a "
-            f"title row is probably above the real header. Try header_row={at} "
-            f"(CLI --header-row {at}).",
+            f"title row is probably above the real header, on sheet row {at + 1}. Try "
+            f"header_row={at} (CLI --header-row {at}).{merged}",
             CleanFrameWarning,
             stacklevel=4,
         )
+
+
+def _warn_repeated_header(path: Path, df: pd.DataFrame) -> None:
+    """Warn - never fix - about rows that repeat the header (exports joined together).
+
+    Such a row would be cleaned as data: ``City`` becomes a city, ``Amount`` blocks the
+    amount column from parsing. The check stops at the first column with no match, so
+    a normal file costs one comparison of its first text column.
+    """
+    if len(df.columns) < 2 or df.empty:
+        return
+    mask = None
+    for col in df.columns:
+        series = df[col]
+        if not is_string_like(series):
+            return  # a typed column cannot hold its own name
+        name = str(col).strip()
+        hit = series.map(lambda v, n=name: isinstance(v, str) and v.strip() == n).to_numpy(bool)
+        mask = hit if mask is None else (mask & hit)
+        if not mask.any():
+            return
+    assert mask is not None
+    rows = [int(i) + 1 for i in mask.nonzero()[0]]  # 1-based data rows, as skiprows takes them
+    shown = ", ".join(map(str, rows[:5])) + (", ..." if len(rows) > 5 else "")
+    # The CLI reads a bare number as "the first N rows"; a comma makes it a row list.
+    cli = ",".join(map(str, rows[:20])) + ("," if len(rows) == 1 else "")
+    warnings.warn(
+        f"CleanFrame: {len(rows)} row(s) of {path.name} repeat the header (data row "
+        f"{shown}) - the file looks like several exports joined together, and these rows "
+        f"would be cleaned as data. Skip them with skiprows={rows[:20]} (CLI --skiprows "
+        f"{cli}) or remove them from the file.",
+        CleanFrameWarning,
+        stacklevel=4,
+    )
 
 
 def _refuse_empty_slice(path: Path, df: pd.DataFrame, nrows, skiprows) -> None:
@@ -360,6 +488,35 @@ def _refuse_empty_slice(path: Path, df: pd.DataFrame, nrows, skiprows) -> None:
         )
 
 
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _workbook_problem(path: Path) -> str | None:
+    """What a file that does not open as a workbook really is, from its first bytes."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(512)
+    except OSError:
+        return None
+    text = head.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if text.startswith((b"<", b"\xff\xfe<", b"\xfe\xff\x00<")):
+        return (
+            "it is an HTML or XML table saved with a spreadsheet name (a common web or "
+            "ERP export). Open it in Excel and save it as .xlsx or CSV"
+        )
+    if head.startswith(_OLE_MAGIC) and path.suffix.lower() in (".xlsx", ".xlsm"):
+        return (
+            "it is a password-protected workbook, or a legacy .xls renamed to "
+            f"{path.suffix.lower()}. Remove the password (or save it as .xlsx) in Excel"
+        )
+    if head.startswith(b"PK"):
+        return (
+            "it is a zip archive without the parts Excel writes: corrupt, or another "
+            "format renamed. Re-export it from the program that made it"
+        )
+    return None
+
+
 def excel_sheet_names(path: str | Path) -> list[str]:
     """Return a workbook's sheet names in file order (raises CleanFrameError on error)."""
     path = Path(path)
@@ -367,15 +524,21 @@ def excel_sheet_names(path: str | Path) -> list[str]:
         with pd.ExcelFile(path) as workbook:
             return list(workbook.sheet_names)
     except ImportError as exc:  # pragma: no cover - optional engine missing
+        problem = _workbook_problem(path)
+        if problem:
+            raise CleanFrameError(f"Could not open workbook {path.name}: {problem}.") from exc
         raise CleanFrameError(
-            f"Reading Excel requires openpyxl ({_detail(exc)}). "
-            "Try `pip install cleanframe-engine[excel]`."
+            f"Reading {path.suffix.lower() or 'Excel'} requires an extra engine "
+            f"({_detail(exc)}). .xlsx needs openpyxl (`pip install cleanframe-engine[excel]`); "
+            "legacy .xls needs xlrd (`pip install xlrd`)."
         ) from exc
     except CleanFrameError:
         raise
     except Exception as exc:  # noqa: BLE001
+        problem = _workbook_problem(path)
         raise CleanFrameError(
-            f"Could not open workbook {path.name}: {_detail(exc)}."
+            f"Could not open workbook {path.name}: "
+            + (f"{problem}." if problem else f"{_detail(exc)}.")
         ) from exc
 
 
@@ -460,7 +623,9 @@ def inference_losses(path: str | Path, df: pd.DataFrame, *, limit: int = 200, **
     gone. A bounded verbatim re-read makes the loss visible.
     """
     try:
-        raw = read_frame(path, nrows=limit, text=True, **read_kwargs)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # the caller's own read already warned
+            raw = read_frame(path, nrows=limit, text=True, **read_kwargs)
     except CleanFrameError:
         return {}
     return compare_for_losses(df, raw)
@@ -606,6 +771,8 @@ def _read_frame(
                 raise CleanFrameError("sheet must select a single sheet (a name or index).")
             if header_row is None and nrows is None:
                 _warn_excel_title_rows(path, sheet, df)
+            if skiprows is None:
+                _warn_repeated_header(path, df)
             if nrows is None:
                 names = excel_sheet_names(path)
                 _warn_excel_structure(path, [names[sheet] if isinstance(sheet, int) else sheet])
@@ -615,7 +782,14 @@ def _read_frame(
             return _apply_row_slice(df, nrows, skiprows)
         if suffix == ".json":
             kwargs.setdefault("encoding", "utf-8")
-            df = pd.read_json(path, **kwargs)
+            try:
+                df = pd.read_json(path, **kwargs)
+            except ValueError as exc:
+                # One JSON object per line (JSON Lines) is not one JSON document; pandas
+                # says "Trailing data". Read it as what it is.
+                if "lines" in kwargs or "trailing data" not in str(exc).lower():
+                    raise
+                df = pd.read_json(path, lines=True, **kwargs)
             if columns is not None:
                 missing = [c for c in columns if c not in df.columns]
                 if missing:
@@ -667,6 +841,8 @@ def _read_frame(
             ) from exc
         if nrows is None:
             _warn_csv_shape(path, kwargs["encoding"], kwargs.get("sep"), blank_lines)
+        if skiprows is None:
+            _warn_repeated_header(path, df)
         return df
     except ImportError as exc:  # pragma: no cover - optional engine missing
         hint = "Try `pip install cleanframe-engine[excel]` for Excel support."

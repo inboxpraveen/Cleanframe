@@ -19,7 +19,7 @@ from . import (
     nulls,  # noqa: E402,F401            priority 20
     outliers,  # noqa: E402,F401         priority 70
     schema_mapping,  # noqa: E402,F401  priority 5
-    text,  # noqa: E402,F401             priority 10, 60
+    text,  # noqa: E402,F401             priority 8, 9, 10, 60
     units,  # noqa: E402,F401            priority 46
 )
 from .base import (

@@ -18,7 +18,7 @@ import pandas as pd
 
 from .dataio import read_frame
 from .detectors import run_detectors
-from .drift import DriftReport, detect_drift
+from .drift import DriftReport, detect_drift, learn_unparsed_dates
 from .errors import CleanFrameError, CleanFrameWarning, DriftError
 from .executor import execute
 from .issues import Issues
@@ -351,6 +351,7 @@ def clean(
         Optional decision backend that answers the judgment calls rules leave open
         (category aliases, typo merges, ambiguous null tokens, weak schema matches)
         as typed questions: ``"typesafe/jev-latest"``, ``"openrouter/typesafe/jev-1.14"``,
+        ``"openrouter/liquid/d1-ultra"``,
         ``"systemone/<model>"`` (self-hosted, ``SYSTEMONE_BASE_URL``), ``"rules"``, any
         LLM spec, or an object with ``.decide()``. Accepted answers are frozen into the
         recipe as ordinary ops; replay never calls the backend. Cannot be combined
@@ -421,6 +422,8 @@ def clean(
         planner, llm, llm_exposure, max_tokens_budget, llm_fallback=llm_fallback
     )
     recipe = the_planner.plan(df, profile, issues, schema=schema_obj, mode=mode, options=options)
+    # Dates the recipe already cannot parse are part of what it learned, not drift.
+    learn_unparsed_dates(df, recipe)
     if decision_log is not None:
         recipe.meta["decisions"] = decision_log.to_meta()
 
@@ -667,6 +670,7 @@ def _patch_recipe_for_drift(recipe: Recipe, report: DriftReport, df: pd.DataFram
 
     if df is not None:
         patched.source_fingerprint = fingerprint_dataframe(df)
+        learn_unparsed_dates(df, patched)
     patched.stamp_meta(patched_for_drift=changes or "no automatic patch applied")
     return patched
 

@@ -116,12 +116,28 @@ bytes) is still read as latin-1, with a warning saying so.
 that holds the column names (CSV) or row (Excel); everything above it is skipped and the
 setting is recorded in the recipe's `read:` section, so `apply` replays it. When a header
 looks wrong (an "empty column name" error, or an Excel sheet whose columns are mostly
-`Unnamed: N`) the message suggests a value — it never applies one for you.
+`Unnamed: N`) the message suggests a value — it never applies one for you. The suggestion
+is the last row of text labels above the first row holding a number or date, so it never
+points at a data row; a header split over two rows (merged cells, pivot output) is named as
+such.
+
+**Excel's `sep=;` line.** A CSV whose first line is `sep=;` (Excel writes and reads it to
+name the delimiter) is read with that delimiter and the line is skipped; both are pinned in
+the recipe's `read:` section.
+
+**Exports joined together.** Rows that repeat the header row are warned about with the
+`skiprows=[...]` (CLI `--skiprows 81,`) that skips them — they would otherwise be cleaned as
+data. **JSON Lines** saved with a `.json` name are read line by line. A file that is not a
+workbook at all — an HTML table saved as `.xls` (common in bank and ERP exports), a
+password-protected workbook, a zip without workbook parts — says what it is instead of a
+pandas error.
 
 **Things CleanFrame warns about but never changes.** Rows with fewer fields than the header
 (read as empty cells), a last row that is a `Total` / `Subtotal` / `Grand total` footer,
 Excel formulas that were never calculated (no cached value) and Excel merged ranges (only the
-top-left cell keeps its value). A NUL byte inside a CSV is refused, because the parser would
+top-left cell keeps its value). That check streams the sheet's XML out of the archive, so it
+costs well under a tenth of pandas' own read; before 0.6.0 it loaded the workbook twice and
+needed 1.6 GB for a 9 MB file. A NUL byte inside a CSV is refused, because the parser would
 silently truncate the value there. `skiprows` past the end of the data raises instead of
 returning an empty frame. Writing a workbook back keeps hidden sheets hidden.
 
@@ -182,8 +198,10 @@ The CLI renders them as one `⚠ …` line on stderr.
 ### CSV formula injection
 
 Cells starting with `=`, `+`, `-`, `@`, tab, or CR are prefixed with `'` on
-CSV/TSV export so Excel/Sheets treat them as text. Keep this enabled when
-exports may be opened by humans.
+CSV/TSV export so Excel/Sheets treat them as text. Signed numbers are left alone, since
+Excel reads them as numbers: `-1.5`, `-1,234.50`, `-3.5%`, `+919876543210`. A phone number
+written with spaces (`+44 20 7946 0958`) is still escaped, because Excel would evaluate it.
+Keep this enabled when exports may be opened by humans.
 
 ### Untrusted recipes
 

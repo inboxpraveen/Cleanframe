@@ -41,8 +41,11 @@ MAX_REGEX_PATTERN_LENGTH = 500
 _CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 #: A signed number is not a formula. Escaping it would corrupt normalised phone
-#: numbers (``+919876543210``) and negative amounts (``-1.5``) on every export.
-_SIGNED_NUMBER_RE = re.compile(r"^[+-](?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
+#: numbers (``+919876543210``), negative amounts (``-1.5``, ``-1,234.50``) and
+#: percentages (``-3.5%``) on every export; Excel reads all of these as numbers.
+_SIGNED_NUMBER_RE = re.compile(
+    r"^[+-](?:\d{1,3}(?:,\d{3})+(?:\.\d*)?|\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?%?$"
+)
 
 #: Control characters Excel refuses to store, and its per-cell character limit.
 _EXCEL_ILLEGAL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
