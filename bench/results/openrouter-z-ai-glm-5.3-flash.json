@@ -1,0 +1,186 @@
+{
+  "benchmark": "CleanBench",
+  "format": 1,
+  "system": {
+    "spec": "openrouter/z-ai/glm-5.3-flash",
+    "type": "llm",
+    "model_reported": "llm:z-ai/glm-5.3-flash",
+    "calibrated": false
+  },
+  "dataset": {
+    "split": "public",
+    "file": "public.yaml",
+    "sha256": "b018fd41383b0e4b26e7cd3ac6d3ab5fe3b60ab6540bb425045acde6697e3342",
+    "scenarios_run": 60,
+    "scenarios_total": 60,
+    "questions_intended": 299
+  },
+  "settings": {
+    "mode": "review",
+    "llm_exposure": "sample",
+    "decision_threshold": 0.9,
+    "merge_gate": 0.5,
+    "max_decisions": 200,
+    "llm_fallback": false
+  },
+  "environment": {
+    "cleanframe": "0.6.0",
+    "python": "3.13.9",
+    "pandas": "2.3.3"
+  },
+  "date": "2026-10-25T19:29:59Z",
+  "complete": true,
+  "errors": [],
+  "metrics": {
+    "overall": {
+      "questions": 299,
+      "answered": 299,
+      "answer_rate": 1.0,
+      "accuracy": 0.9555483452303699,
+      "accuracy_micro": 0.9063545150501672,
+      "safe_apply_precision": 1.0,
+      "applied": 119,
+      "applied_wrong": 0,
+      "coverage": 0.7592443379790941,
+      "coverage_micro": 0.7300613496932515,
+      "ece": 0.05230078929765817,
+      "brier": 0.08212878603686957,
+      "majority_floor": 0.5330493324580334,
+      "ci95": {
+        "accuracy": [
+          0.9222,
+          0.9799
+        ],
+        "safe_apply_precision": [
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "families": {
+      "category_alias": {
+        "questions": 201,
+        "answered": 201,
+        "accuracy": 0.8656716417910447,
+        "applied": 47,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 80,
+        "coverage": 0.5875,
+        "ece": 0.07794993034825813,
+        "brier": 0.11429008470161194,
+        "majority_floor": 0.6019900497512438
+      },
+      "category_merge": {
+        "questions": 32,
+        "answered": 32,
+        "accuracy": 1.0,
+        "applied": 28,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 28,
+        "coverage": 1.0,
+        "ece": 0.027812500000000157,
+        "brier": 0.0014218750000000015,
+        "majority_floor": 0.875
+      },
+      "null_token": {
+        "questions": 23,
+        "answered": 23,
+        "accuracy": 0.9565217391304348,
+        "applied": 8,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 14,
+        "coverage": 0.5714285714285714,
+        "ece": 0.14826086956521742,
+        "brier": 0.05550869565217391,
+        "majority_floor": 0.6086956521739131
+      },
+      "schema_match": {
+        "questions": 43,
+        "answered": 43,
+        "accuracy": 1.0,
+        "applied": 36,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 41,
+        "coverage": 0.8780487804878049,
+        "ece": 0.05953488372093034,
+        "brier": 0.006093023255813954,
+        "majority_floor": 0.046511627906976744
+      }
+    },
+    "difficulty": {
+      "easy": {
+        "questions": 59,
+        "accuracy": 0.9152542372881356,
+        "applied": 26,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.7878787878787878
+      },
+      "hard": {
+        "questions": 122,
+        "accuracy": 0.9426229508196722,
+        "applied": 36,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.782608695652174
+      },
+      "standard": {
+        "questions": 118,
+        "accuracy": 0.864406779661017,
+        "applied": 57,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.6785714285714286
+      }
+    }
+  },
+  "end_to_end": {
+    "cells_fixed": 375,
+    "cells_corrupted": 6,
+    "cells_other": 0,
+    "cells_fixable": 436,
+    "by_family": {
+      "category_alias": {
+        "cells_fixed": 95,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "category_merge": {
+        "cells_fixed": 37,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "null_token": {
+        "cells_fixed": 21,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "schema_match": {
+        "cells_fixed": 222,
+        "cells_corrupted": 6,
+        "cells_other": 0
+      }
+    },
+    "reference_no_decision_model": {
+      "cells_fixed": 68,
+      "cells_corrupted": 16,
+      "cells_other": 0
+    }
+  },
+  "operational": {
+    "requests": 88,
+    "latency_ms_p50": 3445.604,
+    "latency_ms_p95": 11175.912,
+    "input_tokens": 68554,
+    "output_tokens": 42184,
+    "cost_usd": 0.010702,
+    "cost_source": "backend",
+    "cost_per_1k_decisions_usd": 0.035791,
+    "retried_requests": 0
+  },
+  "log": "openrouter-z-ai-glm-5.3-flash.questions.jsonl"
+}

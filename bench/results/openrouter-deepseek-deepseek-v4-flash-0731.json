@@ -1,0 +1,186 @@
+{
+  "benchmark": "CleanBench",
+  "format": 1,
+  "system": {
+    "spec": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "type": "llm",
+    "model_reported": "llm:deepseek/deepseek-v4-flash-0731",
+    "calibrated": false
+  },
+  "dataset": {
+    "split": "public",
+    "file": "public.yaml",
+    "sha256": "b018fd41383b0e4b26e7cd3ac6d3ab5fe3b60ab6540bb425045acde6697e3342",
+    "scenarios_run": 60,
+    "scenarios_total": 60,
+    "questions_intended": 299
+  },
+  "settings": {
+    "mode": "review",
+    "llm_exposure": "sample",
+    "decision_threshold": 0.9,
+    "merge_gate": 0.5,
+    "max_decisions": 200,
+    "llm_fallback": false
+  },
+  "environment": {
+    "cleanframe": "0.6.0",
+    "python": "3.13.9",
+    "pandas": "2.3.3"
+  },
+  "date": "2026-10-25T19:19:21Z",
+  "complete": true,
+  "errors": [],
+  "metrics": {
+    "overall": {
+      "questions": 299,
+      "answered": 299,
+      "answer_rate": 1.0,
+      "accuracy": 0.9900497512437811,
+      "accuracy_micro": 0.9732441471571907,
+      "safe_apply_precision": 1.0,
+      "applied": 146,
+      "applied_wrong": 0,
+      "coverage": 0.8378048780487805,
+      "coverage_micro": 0.8957055214723927,
+      "ece": 0.03185618729097099,
+      "brier": 0.027834531772575253,
+      "majority_floor": 0.5330493324580334,
+      "ci95": {
+        "accuracy": [
+          0.9772,
+          1.0
+        ],
+        "safe_apply_precision": [
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "families": {
+      "category_alias": {
+        "questions": 201,
+        "answered": 201,
+        "accuracy": 0.9601990049751243,
+        "applied": 72,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 80,
+        "coverage": 0.9,
+        "ece": 0.023706467661691523,
+        "brier": 0.03578271144278607,
+        "majority_floor": 0.6019900497512438
+      },
+      "category_merge": {
+        "questions": 32,
+        "answered": 32,
+        "accuracy": 1.0,
+        "applied": 28,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 28,
+        "coverage": 1.0,
+        "ece": 0.046562500000000284,
+        "brier": 0.0023468750000000035,
+        "majority_floor": 0.875
+      },
+      "null_token": {
+        "questions": 23,
+        "answered": 23,
+        "accuracy": 1.0,
+        "applied": 7,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 14,
+        "coverage": 0.5,
+        "ece": 0.14652173913043476,
+        "brier": 0.0314304347826087,
+        "majority_floor": 0.6086956521739131
+      },
+      "schema_match": {
+        "questions": 43,
+        "answered": 43,
+        "accuracy": 1.0,
+        "applied": 39,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 41,
+        "coverage": 0.9512195121951219,
+        "ece": 0.060465116279069905,
+        "brier": 0.00772558139534884,
+        "majority_floor": 0.046511627906976744
+      }
+    },
+    "difficulty": {
+      "easy": {
+        "questions": 59,
+        "accuracy": 1.0,
+        "applied": 31,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.9393939393939394
+      },
+      "hard": {
+        "questions": 122,
+        "accuracy": 0.9508196721311475,
+        "applied": 43,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.9347826086956522
+      },
+      "standard": {
+        "questions": 118,
+        "accuracy": 0.9830508474576272,
+        "applied": 72,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.8571428571428571
+      }
+    }
+  },
+  "end_to_end": {
+    "cells_fixed": 397,
+    "cells_corrupted": 0,
+    "cells_other": 0,
+    "cells_fixable": 436,
+    "by_family": {
+      "category_alias": {
+        "cells_fixed": 102,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "category_merge": {
+        "cells_fixed": 37,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "null_token": {
+        "cells_fixed": 24,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "schema_match": {
+        "cells_fixed": 234,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      }
+    },
+    "reference_no_decision_model": {
+      "cells_fixed": 68,
+      "cells_corrupted": 16,
+      "cells_other": 0
+    }
+  },
+  "operational": {
+    "requests": 88,
+    "latency_ms_p50": 3113.973,
+    "latency_ms_p95": 23004.422,
+    "input_tokens": 74935,
+    "output_tokens": 90566,
+    "cost_usd": 0.022617,
+    "cost_source": "backend",
+    "cost_per_1k_decisions_usd": 0.075643,
+    "retried_requests": 0
+  },
+  "log": "openrouter-deepseek-deepseek-v4-flash-0731.questions.jsonl"
+}

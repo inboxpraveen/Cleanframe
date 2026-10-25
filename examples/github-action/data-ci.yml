@@ -36,7 +36,7 @@ jobs:
 
       - name: Replay committed recipe
         id: cleanframe
-        uses: inboxpraveen/Cleanframe/action@v0.5.1
+        uses: inboxpraveen/Cleanframe/action@v0.6.0
         with:
           files: |                           # <- adjust: one path or glob per line
             data/incoming/*.csv

@@ -1,0 +1,186 @@
+{
+  "benchmark": "CleanBench",
+  "format": 1,
+  "system": {
+    "spec": "openrouter/qwen/qwen3.7-flash",
+    "type": "llm",
+    "model_reported": "llm:qwen/qwen3.7-flash",
+    "calibrated": false
+  },
+  "dataset": {
+    "split": "public",
+    "file": "public.yaml",
+    "sha256": "b018fd41383b0e4b26e7cd3ac6d3ab5fe3b60ab6540bb425045acde6697e3342",
+    "scenarios_run": 60,
+    "scenarios_total": 60,
+    "questions_intended": 299
+  },
+  "settings": {
+    "mode": "review",
+    "llm_exposure": "sample",
+    "decision_threshold": 0.9,
+    "merge_gate": 0.5,
+    "max_decisions": 200,
+    "llm_fallback": false
+  },
+  "environment": {
+    "cleanframe": "0.6.0",
+    "python": "3.13.9",
+    "pandas": "2.3.3"
+  },
+  "date": "2026-10-25T19:32:53Z",
+  "complete": true,
+  "errors": [],
+  "metrics": {
+    "overall": {
+      "questions": 299,
+      "answered": 295,
+      "answer_rate": 0.9866220735785953,
+      "accuracy": 0.9437594635518062,
+      "accuracy_micro": 0.9264214046822743,
+      "safe_apply_precision": 0.9928571428571429,
+      "applied": 140,
+      "applied_wrong": 1,
+      "coverage": 0.8541811846689895,
+      "coverage_micro": 0.852760736196319,
+      "ece": 0.03606317627118628,
+      "brier": 0.057770283737827124,
+      "majority_floor": 0.5330493324580334,
+      "ci95": {
+        "accuracy": [
+          0.9061,
+          0.9787
+        ],
+        "safe_apply_precision": [
+          0.9746,
+          1.0
+        ]
+      }
+    },
+    "families": {
+      "category_alias": {
+        "questions": 201,
+        "answered": 197,
+        "accuracy": 0.9054726368159204,
+        "applied": 64,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 80,
+        "coverage": 0.8,
+        "ece": 0.060345741116751644,
+        "brier": 0.07335164012345685,
+        "majority_floor": 0.6019900497512438
+      },
+      "category_merge": {
+        "questions": 32,
+        "answered": 32,
+        "accuracy": 1.0,
+        "applied": 28,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 28,
+        "coverage": 1.0,
+        "ece": 0.024062500000000542,
+        "brier": 0.0009968750000000017,
+        "majority_floor": 0.875
+      },
+      "null_token": {
+        "questions": 23,
+        "answered": 23,
+        "accuracy": 0.8695652173913043,
+        "applied": 11,
+        "applied_wrong": 1,
+        "safe_apply_precision": 0.9090909090909091,
+        "gold_changes_data": 14,
+        "coverage": 0.7142857142857143,
+        "ece": 0.0373913043478261,
+        "brier": 0.09989565217391305,
+        "majority_floor": 0.6086956521739131
+      },
+      "schema_match": {
+        "questions": 43,
+        "answered": 43,
+        "accuracy": 1.0,
+        "applied": 37,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 41,
+        "coverage": 0.9024390243902439,
+        "ece": 0.05443083720930226,
+        "brier": 0.006103734845069765,
+        "majority_floor": 0.046511627906976744
+      }
+    },
+    "difficulty": {
+      "easy": {
+        "questions": 59,
+        "accuracy": 0.9661016949152542,
+        "applied": 30,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.9090909090909091
+      },
+      "hard": {
+        "questions": 122,
+        "accuracy": 0.9262295081967213,
+        "applied": 41,
+        "applied_wrong": 1,
+        "safe_apply_precision": 0.975609756097561,
+        "coverage": 0.8695652173913043
+      },
+      "standard": {
+        "questions": 118,
+        "accuracy": 0.9067796610169492,
+        "applied": 69,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.8214285714285714
+      }
+    }
+  },
+  "end_to_end": {
+    "cells_fixed": 405,
+    "cells_corrupted": 5,
+    "cells_other": 0,
+    "cells_fixable": 436,
+    "by_family": {
+      "category_alias": {
+        "cells_fixed": 106,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "category_merge": {
+        "cells_fixed": 37,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "null_token": {
+        "cells_fixed": 34,
+        "cells_corrupted": 5,
+        "cells_other": 0
+      },
+      "schema_match": {
+        "cells_fixed": 228,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      }
+    },
+    "reference_no_decision_model": {
+      "cells_fixed": 68,
+      "cells_corrupted": 16,
+      "cells_other": 0
+    }
+  },
+  "operational": {
+    "requests": 88,
+    "latency_ms_p50": 14786.908,
+    "latency_ms_p95": 30046.828,
+    "input_tokens": 74692,
+    "output_tokens": 143805,
+    "cost_usd": 0.022515,
+    "cost_source": "backend",
+    "cost_per_1k_decisions_usd": 0.075302,
+    "retried_requests": 0
+  },
+  "log": "openrouter-qwen-qwen3.7-flash.questions.jsonl"
+}

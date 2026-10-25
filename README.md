@@ -137,12 +137,21 @@ cleanframe clean vendor.csv --decide typesafe/jev-latest --llm-exposure sample
   `to_na`, `rename_to`), and every answer is logged in `recipe.meta.decisions`. Replay makes zero AI calls.
 - **Privacy follows `llm_exposure`.** Category values are sent only under `sample`, and only for columns
   whose values repeat. Dates and numbers are never asked: they stay with the deterministic parsers.
-- Backends: `typesafe/…`, `openrouter/typesafe/…`, self-hosted `systemone/…`, offline `rules`, or any
-  `--llm` spec. No SDK is needed.
+- Backends: `typesafe/…`, `openrouter/typesafe/…`, Liquid AI's `openrouter/liquid/d1-ultra`,
+  self-hosted `systemone/…`, offline `rules`, or any `--llm` spec. No SDK is needed.
 
 How good are decision models at this? **[CleanBench](https://github.com/inboxpraveen/Cleanframe/blob/main/bench/README.md)** measures it on hand-labelled messy
 columns full of traps, scoring *safe-apply precision*: of the answers that would change your data, how
 many are right. See [Decision models](https://github.com/inboxpraveen/Cleanframe/blob/main/docs/decisions.md).
+
+| On CleanBench (60 scenarios, 436 fixable cells) | Accuracy | Safe-apply precision | Cells fixed / corrupted |
+|---|---|---|---|
+| `openrouter/deepseek/deepseek-v4-flash-0731` | 99.0% | 100.0% | 397 / 0 |
+| `openrouter/liquid/d1-ultra` (decision model, 690 ms) | 96.7% | 100.0% | 301 / 6 |
+| `openrouter/z-ai/glm-5.3-flash` | 95.6% | 100.0% | 375 / 6 |
+| CleanFrame's rules alone | 54.6% | 87.5% | 68 / 16 |
+
+All seven systems, with latency and cost: [bench/LEADERBOARD.md](https://github.com/inboxpraveen/Cleanframe/blob/main/bench/LEADERBOARD.md).
 
 ## Bring your own API key (or no key at all)
 
@@ -217,7 +226,7 @@ Fail a pull request when a data file drifts from its committed recipe:
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: inboxpraveen/Cleanframe/action@v0.5.1
+- uses: inboxpraveen/Cleanframe/action@v0.6.0
   with:
     files: data/incoming/*.csv
     recipe: recipes/customer.recipe.yaml

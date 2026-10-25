@@ -1,0 +1,186 @@
+{
+  "benchmark": "CleanBench",
+  "format": 1,
+  "system": {
+    "spec": "openrouter/xiaomi/mimo-v2.6-flash",
+    "type": "llm",
+    "model_reported": "llm:xiaomi/mimo-v2.6-flash",
+    "calibrated": false
+  },
+  "dataset": {
+    "split": "public",
+    "file": "public.yaml",
+    "sha256": "b018fd41383b0e4b26e7cd3ac6d3ab5fe3b60ab6540bb425045acde6697e3342",
+    "scenarios_run": 60,
+    "scenarios_total": 60,
+    "questions_intended": 299
+  },
+  "settings": {
+    "mode": "review",
+    "llm_exposure": "sample",
+    "decision_threshold": 0.9,
+    "merge_gate": 0.5,
+    "max_decisions": 200,
+    "llm_fallback": false
+  },
+  "environment": {
+    "cleanframe": "0.6.0",
+    "python": "3.13.9",
+    "pandas": "2.3.3"
+  },
+  "date": "2026-10-25T19:26:58Z",
+  "complete": true,
+  "errors": [],
+  "metrics": {
+    "overall": {
+      "questions": 299,
+      "answered": 296,
+      "answer_rate": 0.9899665551839465,
+      "accuracy": 0.9482799994592256,
+      "accuracy_micro": 0.939799331103679,
+      "safe_apply_precision": 1.0,
+      "applied": 125,
+      "applied_wrong": 0,
+      "coverage": 0.7635561846689896,
+      "coverage_micro": 0.7668711656441718,
+      "ece": 0.035488939189189654,
+      "brier": 0.0530574153212027,
+      "majority_floor": 0.5330493324580334,
+      "ci95": {
+        "accuracy": [
+          0.8975,
+          0.9847
+        ],
+        "safe_apply_precision": [
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "families": {
+      "category_alias": {
+        "questions": 201,
+        "answered": 201,
+        "accuracy": 0.9303482587064676,
+        "applied": 55,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 80,
+        "coverage": 0.6875,
+        "ece": 0.0555983781094527,
+        "brier": 0.07061788524913433,
+        "majority_floor": 0.6019900497512438
+      },
+      "category_merge": {
+        "questions": 32,
+        "answered": 29,
+        "accuracy": 0.90625,
+        "applied": 25,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 28,
+        "coverage": 0.8928571428571429,
+        "ece": 0.03793103448275881,
+        "brier": 0.0016758620689655186,
+        "majority_floor": 0.875
+      },
+      "null_token": {
+        "questions": 23,
+        "answered": 23,
+        "accuracy": 0.9565217391304348,
+        "applied": 8,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 14,
+        "coverage": 0.5714285714285714,
+        "ece": 0.12478260869565218,
+        "brier": 0.05423913043478261,
+        "majority_floor": 0.6086956521739131
+      },
+      "schema_match": {
+        "questions": 43,
+        "answered": 43,
+        "accuracy": 1.0,
+        "applied": 37,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "gold_changes_data": 41,
+        "coverage": 0.9024390243902439,
+        "ece": 0.05837209302325587,
+        "brier": 0.004993023255813955,
+        "majority_floor": 0.046511627906976744
+      }
+    },
+    "difficulty": {
+      "easy": {
+        "questions": 59,
+        "accuracy": 0.9491525423728814,
+        "applied": 28,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.8484848484848485
+      },
+      "hard": {
+        "questions": 122,
+        "accuracy": 0.9426229508196722,
+        "applied": 35,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.7608695652173914
+      },
+      "standard": {
+        "questions": 118,
+        "accuracy": 0.9322033898305084,
+        "applied": 62,
+        "applied_wrong": 0,
+        "safe_apply_precision": 1.0,
+        "coverage": 0.7380952380952381
+      }
+    }
+  },
+  "end_to_end": {
+    "cells_fixed": 383,
+    "cells_corrupted": 0,
+    "cells_other": 0,
+    "cells_fixable": 436,
+    "by_family": {
+      "category_alias": {
+        "cells_fixed": 93,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "category_merge": {
+        "cells_fixed": 37,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "null_token": {
+        "cells_fixed": 25,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      },
+      "schema_match": {
+        "cells_fixed": 228,
+        "cells_corrupted": 0,
+        "cells_other": 0
+      }
+    },
+    "reference_no_decision_model": {
+      "cells_fixed": 68,
+      "cells_corrupted": 16,
+      "cells_other": 0
+    }
+  },
+  "operational": {
+    "requests": 88,
+    "latency_ms_p50": 2150.936,
+    "latency_ms_p95": 6750.043,
+    "input_tokens": 68055,
+    "output_tokens": 22035,
+    "cost_usd": 0.011357,
+    "cost_source": "backend",
+    "cost_per_1k_decisions_usd": 0.037983,
+    "retried_requests": 1
+  },
+  "log": "openrouter-xiaomi-mimo-v2.6-flash.questions.jsonl"
+}

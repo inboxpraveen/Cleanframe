@@ -6,7 +6,7 @@ drifted from its recipe or a validation fails, and writes a per-file table to th
 summary.
 
 ```yaml
-- uses: inboxpraveen/Cleanframe/action@v0.5.1
+- uses: inboxpraveen/Cleanframe/action@v0.6.0
   with:
     files: data/incoming/*.csv
     recipe: recipes/customer.recipe.yaml
@@ -151,7 +151,7 @@ Full YAML for each setup: [`action/README.md`](https://github.com/inboxpraveen/C
 
 | `uses:` | `cleanframe-version` empty installs |
 |---------|-------------------------------------|
-| `inboxpraveen/Cleanframe/action@v0.5.1` | CleanFrame **from the same checkout** as the action, so action and library are one release |
+| `inboxpraveen/Cleanframe/action@v0.6.0` | CleanFrame **from the same checkout** as the action, so action and library are one release |
 | `inboxpraveen/cleanframe-action@v1` (Marketplace) | The CleanFrame release pinned by that action release |
 
 For a fully reproducible run, pin a tag or commit SHA in `uses:` and set
