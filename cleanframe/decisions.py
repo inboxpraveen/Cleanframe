@@ -480,15 +480,17 @@ class LLMDecisionClient:
 
     calibrated = False
 
-    def __init__(self, client: Any, *, max_output_tokens: int = 4096) -> None:
+    def __init__(self, client: Any, *, max_output_tokens: int | None = None) -> None:
+        from .llm import DEFAULT_MAX_OUTPUT_TOKENS
+
         if not hasattr(client, "complete"):
             raise DecisionError("LLMDecisionClient needs an object with a .complete() method.")
         self.client = client
         self.model = f"llm:{getattr(client, 'model', 'custom')}"
-        self.max_output_tokens = max_output_tokens
+        self.max_output_tokens = max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS
 
     def decide(self, state: Any, questions: dict[str, Question]) -> DecisionResponse:
-        from .llm import _extract_json_object
+        from .llm import _extract_json_object, check_answer, finished_on_its_own
 
         payload = {
             "state": state,
@@ -504,9 +506,16 @@ class LLMDecisionClient:
         user = json.dumps(payload, ensure_ascii=False, indent=2)
         response = self.client.complete(_LLM_DECISION_PROMPT, user, max_tokens=self.max_output_tokens)
         try:
-            data = json.loads(_extract_json_object(response.text))
+            check_answer(response, self.max_output_tokens)
+            data = json.loads(
+                _extract_json_object(response.text, close_unbalanced=finished_on_its_own(response))
+            )
         except (LLMError, json.JSONDecodeError) as exc:
-            raise DecisionError(f"The LLM did not return usable JSON answers: {exc}") from exc
+            cut = getattr(response, "finish_reason", None) == "length"
+            raise DecisionError(
+                f"The LLM did not return usable JSON answers: {exc}"
+                + (" (the answer hit the output cap)" if cut and "cap" not in str(exc) else "")
+            ) from exc
         answers_raw = data.get("answers", data) if isinstance(data, dict) else {}
         answers: dict[str, Answer] = {}
         for name, question in questions.items():
@@ -530,6 +539,7 @@ class LLMDecisionClient:
             model=self.model,
             input_tokens=int(getattr(response, "input_tokens", 0) or 0),
             output_tokens=int(getattr(response, "output_tokens", 0) or 0),
+            cost=_prob_free_float(getattr(response, "cost", None)),
         )
 
 
@@ -610,12 +620,26 @@ _TYPESAFE_DEFAULT_URL = "https://api.typesafe.ai"
 _OPENROUTER_URL = "https://openrouter.ai/api"
 
 
+def _is_openrouter_decision_model(model: str) -> bool:
+    """Whether an OpenRouter model id is a System One decision model, not a chat model.
+
+    OpenRouter serves these on ``/api/v1/systemone``; a chat request to them fails.
+    Known families: TypeSafe's Jev (``typesafe/...``, alias ``~typesafe/...``) and
+    Liquid AI's d1 (``liquid/d1-ultra``; Liquid's ``lfm-*`` models are chat models).
+    Any other decision model works through ``systemone/<model>`` with
+    ``SYSTEMONE_BASE_URL=https://openrouter.ai/api``.
+    """
+    vendor, _, name = model.lower().lstrip("~").partition("/")
+    return vendor == "typesafe" or (vendor == "liquid" and name.startswith("d1"))
+
+
 def get_decision_client(spec: Any) -> DecisionClient:
     """Resolve ``decide=`` into a client.
 
     * ``"typesafe/jev-latest"`` - TypeSafe's API; reads only ``TYPESAFE_API_KEY``
       (and ``TYPESAFE_BASE_URL``, as TypeSafe's own SDK does).
-    * ``"openrouter/typesafe/jev-1.14"`` - Jev through OpenRouter; reads only
+    * ``"openrouter/typesafe/jev-1.14"`` or ``"openrouter/liquid/d1-ultra"`` - a
+      decision model through OpenRouter's System One route; reads only
       ``OPENROUTER_API_KEY``.
     * ``"systemone/<model>"`` - any self-hosted System One server at
       ``SYSTEMONE_BASE_URL`` (key ``SYSTEMONE_API_KEY``, optional).
@@ -650,7 +674,7 @@ def get_decision_client(spec: Any) -> DecisionClient:
             key_env="TYPESAFE_API_KEY",
             provider="TypeSafe",
         )
-    if provider == "openrouter" and model.lower().startswith("typesafe/"):
+    if provider == "openrouter" and _is_openrouter_decision_model(model):
         return SystemOneClient(
             model,
             base_url=_OPENROUTER_URL,

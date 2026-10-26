@@ -24,11 +24,11 @@
     "llm_fallback": false
   },
   "environment": {
-    "cleanframe": "0.5.0",
+    "cleanframe": "0.6.0",
     "python": "3.13.9",
     "pandas": "2.3.3"
   },
-  "date": "2026-10-17T16:29:30Z",
+  "date": "2026-10-25T19:34:19Z",
   "complete": true,
   "errors": [],
   "metrics": {
@@ -173,8 +173,8 @@
   },
   "operational": {
     "requests": 88,
-    "latency_ms_p50": 0.015,
-    "latency_ms_p95": 0.337,
+    "latency_ms_p50": 0.009,
+    "latency_ms_p95": 0.273,
     "input_tokens": null,
     "output_tokens": null,
     "cost_usd": 0.0,

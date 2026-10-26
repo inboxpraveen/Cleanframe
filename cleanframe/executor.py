@@ -37,6 +37,8 @@ class ExecutionResult:
     validation_results: list[ValidationResult] = field(default_factory=list)
     lineage: dict[str, str | None] = field(default_factory=dict)
     log: list[str] = field(default_factory=list)
+    #: Per source column: values an op could not parse and turned into missing values.
+    parse_losses: dict[str, int] = field(default_factory=dict)
 
     @property
     def has_quarantine(self) -> bool:
@@ -250,6 +252,7 @@ def execute(
         validation_results=outcome.results,
         lineage=source_of,
         log=log,
+        parse_losses=dict(nulled),
     )
 
 

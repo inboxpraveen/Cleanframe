@@ -11,7 +11,10 @@ LLM planning is **optional**. Default `cf.clean(df)` uses the rules planner only
 3. On failure / budget exceed / a plan that cannot run, CleanFrame **falls back to rules** and warns
    (`CleanFrameWarning`), recording the reason in `recipe.meta["llm_fallback"]`.
    Pass `llm_fallback=False` to raise instead.
-4. HTTP calls use a **60 second** timeout.
+4. HTTP calls wait **15 seconds** to connect and up to **600 seconds** for the answer (a
+   reasoning model can take minutes), with one SDK retry on rate limits and server errors.
+   Each call is logged at INFO on the `cleanframe.llm` logger: tokens in and out, reasoning
+   tokens, finish reason, seconds, and the cost when the provider reports it (OpenRouter does).
 
 ## Spec format
 
@@ -92,6 +95,34 @@ A model's recipe is also **dry-run on the first 200 rows** before it is accepted
 plan that loads but cannot run (two columns renamed to one name, a rejected regex)
 takes the same fallback path instead of failing at execution.
 
+## Reasoning models
+
+Most current models reason before they answer, and the reasoning counts against the
+output cap. CleanFrame's cap is therefore **32,768 tokens** per call
+(`cleanframe.llm.DEFAULT_MAX_OUTPUT_TOKENS`; `LLMPlanner(max_output_tokens=...)` and
+`LLMDecisionClient(max_output_tokens=...)` change it). You pay only for the tokens the
+model writes, not for the cap. At the old 2,048 cap, three of six models tested in
+October 2026 spent the whole cap reasoning and returned no answer at all; one used
+19,113 tokens (16,927 of them reasoning) for a single recipe.
+
+- **A cap above the model's own limit.** OpenRouter lowers it for you. A direct API that
+  refuses it with a 400 naming its limit (OpenAI: "supports at most 16384 completion
+  tokens", Anthropic, DeepSeek, Groq) is retried once at that limit. A local server whose
+  model has a small context window (vLLM: "maximum context length is 8192 tokens") is
+  retried at the window minus the prompt. OpenAI models that refuse `max_tokens` outright
+  get `max_completion_tokens` instead.
+- **An answer that still does not fit** is reported as such ("used its whole
+  32768-token output cap (32768 of them reasoning) before it wrote an answer"), not as
+  "no JSON", and takes the usual fallback path.
+- **A `<think>…</think>` block in the answer** (local servers running DeepSeek-R1 or
+  Qwen3) is skipped, so draft JSON inside it is never taken for the recipe.
+
+Tested end to end through OpenRouter, planner and decisions, in October 2026:
+`qwen/qwen3.8-flash`, `qwen/qwen3.7-flash`, `deepseek/deepseek-v4-flash-0731`,
+`z-ai/glm-5.3-flash`, `xiaomi/mimo-v2.6-flash` and `minimax/minimax-m3.1-flash`. GLM and
+MiniMax refuse a request with reasoning switched off, so CleanFrame does not try to.
+Their CleanBench scores are in [bench/LEADERBOARD.md](../bench/LEADERBOARD.md).
+
 ## Ops the mode forbids
 
 An LLM plan never contains `fill_na` or `drop_columns`, **in any mode** — imputing a
@@ -100,6 +131,13 @@ immediately, so `review` mode would not be a gate. Validation rules the model wr
 with `on_fail: drop` or `null` are downgraded to `quarantine`. Anything removed warns
 and is listed in `recipe.meta["llm_blocked_ops"]` (e.g. `["fill_na on Amount"]`);
 add the step to the recipe yourself if you want it.
+
+Validations and `dedup` run after renames, so they name a column by its output name. A
+model that renames `Email` to `email` but validates `Email` would lose the check; CleanFrame
+points such a reference at the renamed column and lists the change in
+`recipe.meta["llm_renamed_refs"]`. The prompt lists each op with the only parameters it
+accepts, so a model has less reason to invent one; a step it still gets wrong is dropped
+and listed in `recipe.meta["llm_dropped"]`.
 
 ## Providers
 
@@ -128,10 +166,13 @@ result = cf.clean(df, llm=MyClient(), mode="review")
 cf.clean(df, llm="openai/gpt-4o", max_tokens_budget=10_000)
 ```
 
-The cap is enforced twice: a pre-flight estimate (~4 chars/token, including the
-maximum output) before the request, and the usage the provider reports afterwards.
-The second check cannot un-spend tokens — a call that overshoots is rejected but may
-already have been billed, so set the cap with headroom. Either check going over the
-budget raises `BudgetExceeded`, which is an `LLMError` — so it falls back to rules,
-or raises, per `llm_fallback`. Passing `max_tokens_budget` without `llm=` warns that
-it was ignored.
+The budget caps prompt plus answer. Before the request the prompt is estimated
+(~4 chars/token) and the answer's output cap is lowered to what the budget has left, so
+the provider itself stops the model at the budget; if the prompt alone leaves less than
+1,024 tokens for the answer, the call is refused before it is made. Afterwards the usage
+the provider reports is checked again. That second check cannot un-spend tokens — the
+estimate can undercount non-Latin text — so set the budget with headroom. Either check
+going over the budget raises `BudgetExceeded`, which is an `LLMError` — so it falls back
+to rules, or raises, per `llm_fallback`. A reasoning model needs room to think: a budget
+of a few thousand tokens can leave it no room to answer. Passing `max_tokens_budget`
+without `llm=` warns that it was ignored.

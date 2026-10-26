@@ -462,6 +462,26 @@ def replace(series: pd.Series, pattern: str, repl: str = "", regex: bool = True)
     return _apply_str(series, lambda s: s.replace(pattern, repl))
 
 
+#: Excel's error values. A cell showing one holds a formula that failed in the source
+#: workbook (a division by zero, a broken reference), never data, so it reads as missing.
+EXCEL_ERROR_TOKENS = [
+    "#DIV/0!",
+    "#N/A",
+    "#NAME?",
+    "#NULL!",
+    "#NUM!",
+    "#REF!",
+    "#VALUE!",
+    "#SPILL!",
+    "#CALC!",
+    "#FIELD!",
+    "#BLOCKED!",
+    "#CONNECT!",
+    "#BUSY!",
+    "#UNKNOWN!",
+    "#GETTING_DATA",
+]
+
 #: Tokens that commonly stand in for a missing value in exported data.
 DEFAULT_NA_TOKENS = [
     "",
@@ -478,6 +498,7 @@ DEFAULT_NA_TOKENS = [
     "unknown",
     "not available",
     "not applicable",
+    *EXCEL_ERROR_TOKENS,
 ]
 
 
@@ -1297,8 +1318,22 @@ def dedup(
             raise OpError(f"dedup subset references unknown column(s): {missing}")
     key_cols = subset if subset else list(df.columns)
     key = df[key_cols].apply(_dedup_key_column, ignore_case=ignore_case)
-    mask = ~key.duplicated(keep=keep if keep is not False else False)
-    return df[mask]
+    dup = key.duplicated(keep=keep if keep is not False else False)
+    if subset:
+        # A row with no value in any key column has nothing to match on: two customers
+        # with a blank email are not the same customer, but pandas counts missing keys
+        # as equal and would keep only the first of them.
+        dup &= df[key_cols].apply(_has_key_value).any(axis=1)
+    return df[~dup]
+
+
+def _has_key_value(col: pd.Series) -> pd.Series:
+    """True where a dedup key cell holds a value (not missing, not blank text)."""
+    present = col.notna()
+    if pd.api.types.is_object_dtype(col.dtype) or pd.api.types.is_string_dtype(col.dtype):
+        blank = col.map(lambda v: isinstance(v, str) and not v.strip())
+        present &= ~blank.astype(bool)
+    return present
 
 
 def _dedup_key_column(col: pd.Series, ignore_case: bool = False) -> pd.Series:
@@ -1496,4 +1531,5 @@ __all__ = [
     "CURRENCY_SYMBOLS",
     "CURRENCY_WORDS",
     "DEFAULT_NA_TOKENS",
+    "EXCEL_ERROR_TOKENS",
 ]

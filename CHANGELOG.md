@@ -7,6 +7,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-26
+
+Reasoning models, Liquid AI's d1-ultra, and files as people really send them. Six current
+reasoning models now plan and decide end to end (three of them used to return nothing), a
+recipe no longer reports drift on the very file it was learned from, Excel's own quirks are
+read for what they are, and reading a large workbook takes a sixth of the memory.
+
+### Added
+
+- **Liquid AI's d1 decision models: `decide="openrouter/liquid/d1-ultra"`.** They go through
+  OpenRouter's System One route, like Jev; `openrouter/~typesafe/...` aliases do too. Any
+  other decision model OpenRouter serves works through `systemone/<vendor>/<model>` with
+  `SYSTEMONE_BASE_URL=https://openrouter.ai/api`.
+- **Reasoning models in the LLM planner and decisions.** `LLMResponse` gains optional
+  `finish_reason`, `reasoning_tokens` and `cost` fields (trailing, so custom clients are
+  unaffected). Each call is logged at INFO on `cleanframe.llm` with tokens, reasoning tokens,
+  finish reason, seconds and cost. CleanBench now records the cost OpenRouter reports for
+  LLM backends, so their `$ / 1k decisions` column is filled.
+- **Excel's quirks, read for what they are.**
+  - Excel error values (`#DIV/0!`, `#REF!`, `#VALUE!`, `#NAME?`, `#NUM!`, `#NULL!`, `#N/A`,
+    `#SPILL!`, …) are formulas that failed in the source workbook. They join the
+    disguised-null vocabulary (`ops.EXCEL_ERROR_TOKENS`) and become missing values, with a
+    message that says what they are.
+  - A new `excel_text` detector unwraps `="00123"`, the text formula exports use to keep
+    leading zeros in Excel, when most of a column uses it.
+  - A CSV whose first line is Excel's `sep=;` is read with that delimiter, and the line is
+    skipped; both are pinned in the recipe's `read:` section.
+- JSON Lines saved with a `.json` name are read line by line instead of failing with
+  pandas' "Trailing data".
+- A warning for rows that repeat the header row (several exports joined together), with the
+  `skiprows=[...]` that skips them. The CLI's `--skiprows` now also takes a comma-separated
+  list of 1-based data rows (`--skiprows 81,` skips row 81 only).
+- `cleanframe.readfix.suggest_header_row_from_rows` and `header_spans_rows`.
+- **CleanBench rows for seven systems** (public split, 60 scenarios, 299 questions), run through
+  OpenRouter: `deepseek/deepseek-v4-flash-0731` (99.0% accuracy, 397 cells fixed / 0 corrupted),
+  `liquid/d1-ultra` (96.7%, 100% safe-apply precision, 690 ms p50, $0.006 per 1k decisions),
+  `z-ai/glm-5.3-flash`, `xiaomi/mimo-v2.6-flash`, `qwen/qwen3.7-flash` and
+  `minimax/minimax-m3.1-flash` are ranked; `qwen/qwen3.8-flash` is a 10-scenario partial run (p95
+  latency of nearly 5 minutes per request). Every model kept safe-apply precision at 98.5% or
+  above under CleanFrame's 0.9 bar; the rules alone fix 68 cells and corrupt 16.
+
+### Changed
+
+- **LLM output cap 2,048 (planner) / 4,096 (decisions) → 32,768 tokens**
+  (`llm.DEFAULT_MAX_OUTPUT_TOKENS`). Only tokens written are billed. A direct API that refuses
+  a cap above the model's limit is retried once at the limit it names; a local server with a
+  small context window (vLLM: "maximum context length is 8192 tokens") is retried at the window
+  minus the prompt; OpenAI models that refuse `max_tokens` get `max_completion_tokens`. An
+  error OpenRouter reports inside a 200 response is now part of the message.
+- **LLM HTTP timeouts: 60 s → 15 s to connect and 600 s for the answer**, with one SDK retry
+  (the SDK default was two, so a stalled call could hang for half an hour).
+- **`max_tokens_budget` lowers the answer's cap** to what the prompt leaves of the budget,
+  instead of refusing whenever prompt + maximum output exceeded it. It refuses only when the
+  prompt alone leaves less than 1,024 tokens.
+- The planner prompt lists each op with the only parameters it accepts and no longer offers
+  `fill_na` / `drop_columns`, which an LLM plan may not contain anyway.
+- An LLM recipe whose validation or `dedup` names a renamed column's *source* is pointed at
+  the output name, instead of the check being skipped. Listed in
+  `recipe.meta["llm_renamed_refs"]`.
+- The CSV formula guard leaves signed numbers with thousands separators or a percent sign
+  alone (`-1,234.50`, `-3.5%`); Excel reads them as numbers.
+
+### Fixed
+
+- **`dedup` on a key column dropped every row that had no key.** pandas counts missing values
+  as equal, so `dedup: {subset: [email]}` on a customer file where a third of the emails were
+  blank kept one blank-email customer and dropped the rest (55 of 161 rows in a test file,
+  proposed by two of the six LLMs tested). With a `subset`, a row whose key columns are all
+  missing or blank is now never a duplicate; generated code does the same. Full-row dedup is
+  unchanged.
+- **Replaying a recipe on the file it was learned from stopped with `format_drift`** (exit 3)
+  whenever some dates in a `parse_date` column did not parse (an impossible `31/02/2024`, an
+  Excel serial, a `TBD`): 4 of 29 real-world-shaped test files. The fingerprint now records the
+  shapes of those values and their share (`unparsed_date_patterns`; shapes only, never values),
+  and replay reports only a new shape, or a known one that became far more common, as in a
+  DD/MM → MM/DD switch. Streamed replay counts the whole file the same way; `suggest --update`
+  re-learns the shapes. Recipes saved before 0.6.0 behave as before.
+- **Reasoning models returned no answer.** At the old cap, `qwen/qwen3.8-flash`,
+  `qwen/qwen3.7-flash` and `deepseek/deepseek-v4-flash-0731` spent the whole cap reasoning, and
+  every plan fell back to the rules. An answer that still does not fit now says so ("used its
+  whole 32768-token output cap ... before it wrote an answer") instead of "no JSON object", and
+  a `<think>` block in the answer is skipped.
+- **A reply missing its last closing brace failed the whole decision request.** Models slip
+  like this now and then (`{"answers": {"q": {"probabilities": {"yes": 0.97}}}` - four `{`,
+  three `}`); two of seven systems lost a CleanBench scenario to it. A reply the model *finished*
+  (`finish_reason` stop) that ends outside a string with closing brackets missing is completed
+  and parsed, for decisions and plans alike. A reply cut off by the output cap is never
+  completed: it may end mid-number.
+- **Header-row hints pointed at data rows.** For a report workbook with a two-row merged header
+  the hint said `header_row=6` (a data row); for pivot-table output `header_row=3`; for a CSV
+  with one blank header name, "line 2". A hint is now the last row of text labels above the
+  first row holding a number or date, and a two-row header is named as such.
+- **Reading a 9 MB, 200,000-row workbook took 62 s and 1.7 GB of memory**, 44 s and 1.6 GB of it
+  in the advisory check for uncached formulas and merged cells, which loaded the workbook twice.
+  The check now streams the sheet XML from the archive: 25 s and 287 MB in all. The size above
+  which the check is skipped rose from 25 MB to 200 MB.
+- A file that is not a workbook says what it is: an HTML or XML table saved as `.xls` (common
+  in bank and ERP exports), a password-protected workbook, a zip without workbook parts.
+  These used to surface pandas messages such as "No such keys(s): 'io.excel.zip.reader'".
+- The bounded verbatim re-read that looks for type-inference losses no longer repeats the
+  read's own warnings.
+- A streamed replay warned once per chunk ("values became missing ... (37,649)" ten times for a
+  1M-row file in 100k chunks). It now warns once with the whole-file count, repeats any other
+  chunk warning once, and `StreamSummary.parse_losses` / `ExecutionResult.parse_losses` carry
+  the counts per column.
+
 ## [0.5.1] — 2026-10-19
 
 One logo everywhere, a README hero made from real output, and a correct row count in `cleanframe demo`.
@@ -516,7 +622,8 @@ now fail loudly, and a few transforms that quietly corrupted data no longer run.
   deterministic executor, validation/quarantine, cell-level diff, schema drift, HTML reports,
   codegen, and CLI.
 
-[Unreleased]: https://github.com/inboxpraveen/Cleanframe/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/inboxpraveen/Cleanframe/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.6.0
 [0.5.1]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.5.1
 [0.5.0]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.5.0
 [0.4.0]: https://github.com/inboxpraveen/Cleanframe/releases/tag/v0.4.0

@@ -45,7 +45,7 @@ Accepted by `report`, `clean`, `apply`, `suggest`, `infer-schema`:
 | `--sheet NAME` | Excel sheet by name; `#N` selects the 0-based positional index (e.g. `--sheet '#0'`). A bare number is a sheet *name*, not an index |
 | `--columns A,B,C` | Read a subset of columns (filter; keeps file order) |
 | `--nrows N` | Read only the first N data rows |
-| `--skiprows N` | Skip the first N data rows; the header row is always kept |
+| `--skiprows N` | Skip the first N data rows; `N,M,...` (any comma, e.g. `81,`) skips those 1-based data rows instead. The header row is always kept |
 | `--header-row N` | The 0-based line the header is on, when title rows sit above it (recorded in the recipe `read:` section) |
 
 `--skiprows` and `--nrows` count *data rows* — identically for CSV, Excel, Parquet and JSON. A negative value is a usage error. Under `--skiprows`/`--nrows` the diff's `row_id` is relative to the loaded slice.
@@ -122,7 +122,7 @@ cleanframe clean examples/messy_customers.csv \
 | `--max-tokens N` | LLM token budget cap |
 | `--llm-exposure none\|metadata\|sample` | What the LLM may see (default: `metadata` — never raw cells) |
 | `--no-llm-fallback` | Fail instead of degrading to the rules planner when an LLM or decision call fails |
-| `--decide SPEC` | Decision backend for the judgment calls rules leave open: `typesafe/jev-latest`, `openrouter/typesafe/jev-1.14`, `systemone/MODEL`, `rules`, or any `--llm` spec (see [Decision models](Decision-Models)). Category questions need `--llm-exposure sample` |
+| `--decide SPEC` | Decision backend for the judgment calls rules leave open: `typesafe/jev-latest`, `openrouter/typesafe/jev-1.14`, `openrouter/liquid/d1-ultra`, `systemone/MODEL`, `rules`, or any `--llm` spec (see [Decision models](Decision-Models)). Category questions need `--llm-exposure sample` |
 | `--decision-threshold P` | Probability a decision needs before it changes data (default `0.9`; the mode's threshold applies if higher) |
 | `--max-decisions N` | Most questions to ask the decision backend (default `200`) |
 | `--mode review\|auto\|strict` | Confidence / failure policy (see [Modes](#modes)) |

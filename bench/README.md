@@ -257,6 +257,8 @@ records the model the backend reported.
 |---|---|---|
 | TypeSafe Jev (direct) | `TYPESAFE_API_KEY` (`TYPESAFE_BASE_URL` optional) | `python -m bench.cleanbench run --system typesafe/jev-latest` |
 | Jev via OpenRouter | `OPENROUTER_API_KEY` | `python -m bench.cleanbench run --system openrouter/typesafe/jev-1.14` |
+| Liquid AI d1-ultra via OpenRouter | `OPENROUTER_API_KEY` | `python -m bench.cleanbench run --system openrouter/liquid/d1-ultra` |
+| Any OpenRouter chat model (LLM adapter) | `OPENROUTER_API_KEY` | `python -m bench.cleanbench run --system openrouter/qwen/qwen3.8-flash` |
 | Open System One model, self-hosted (imajev, Kev, Laya, …) | `SYSTEMONE_BASE_URL=http://127.0.0.1:8765` (`SYSTEMONE_API_KEY` optional) | `python -m bench.cleanbench run --system systemone/<model>` |
 | Claude | `ANTHROPIC_API_KEY` | `python -m bench.cleanbench run --system anthropic/claude-sonnet-4-6 --price-in <in> --price-out <out>` |
 | OpenAI | `OPENAI_API_KEY` | `python -m bench.cleanbench run --system openai/gpt-4o-mini --price-in <in> --price-out <out>` |

@@ -150,6 +150,23 @@ def _nonneg_int(text: str) -> int:
     return value
 
 
+def _skiprows_arg(text: str) -> int | list[int]:
+    """``N`` skips the first N data rows; ``3,17,40`` skips those (1-based) data rows."""
+    if "," not in text:
+        return _nonneg_int(text)
+    rows = []
+    for part in text.split(","):
+        if not part.strip():
+            continue
+        row = _nonneg_int(part.strip())
+        if row < 1:
+            raise argparse.ArgumentTypeError(f"data-row numbers start at 1, got {row}")
+        rows.append(row)
+    if not rows:
+        raise argparse.ArgumentTypeError(f"expected row numbers, got {text!r}")
+    return rows
+
+
 def _positive_int(text: str) -> int:
     try:
         value = int(text)
@@ -184,8 +201,9 @@ def _add_selection_args(parser: argparse.ArgumentParser, *, sheet: bool = True) 
     parser.add_argument("--nrows", type=_nonneg_int, help="read only the first N data rows")
     parser.add_argument(
         "--skiprows",
-        type=_nonneg_int,
-        help="skip the first N data rows (the header row is always kept)",
+        type=_skiprows_arg,
+        help="skip the first N data rows, or a comma-separated list of 1-based data rows "
+        "(e.g. 81,162); the header row is always kept",
     )
     parser.add_argument(
         "--header-row",
@@ -871,7 +889,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--decide",
         metavar="SPEC",
         help="decision backend for judgment calls (aliases, typo merges, null tokens, schema "
-        "matches), e.g. typesafe/jev-latest, openrouter/typesafe/jev-1.14, systemone/MODEL, "
+        "matches), e.g. typesafe/jev-latest, openrouter/typesafe/jev-1.14, "
+        "openrouter/liquid/d1-ultra, systemone/MODEL, "
         "rules, or any --llm spec; category questions need --llm-exposure sample",
     )
     p.add_argument(

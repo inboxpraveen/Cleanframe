@@ -1,6 +1,6 @@
 # CleanFrame Data CI - replay committed CleanFrame recipes against data files in CI.
 #
-# Usage (from this repository):   uses: inboxpraveen/Cleanframe/action@v0.5.1
+# Usage (from this repository):   uses: inboxpraveen/Cleanframe/action@v0.6.0
 # Docs: https://github.com/inboxpraveen/Cleanframe/blob/main/docs/github-action.md
 #
 # Security: every input reaches the scripts through an environment variable; no

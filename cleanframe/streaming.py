@@ -23,7 +23,7 @@ import os
 import re
 import warnings
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -213,7 +213,8 @@ def _check_row_widths(in_path: Path, kwargs: dict) -> None:
 class _Scan:
     dtypes: dict[str, str]
     rows: int
-    format_findings: list
+    #: per parse_date source column: the values its formats did not parse, every chunk
+    unparsed: dict
 
 
 def _scan(recipe: Recipe, in_path: Path, chunksize: int, kwargs: dict, *, formats: bool) -> _Scan:
@@ -224,11 +225,12 @@ def _scan(recipe: Recipe, in_path: Path, chunksize: int, kwargs: dict, *, format
     made the output differ from ``apply_recipe`` (``2`` vs ``2.0``). Scanning first
     fixes both: dtypes are the ones the whole file infers, and drift covers every row.
     """
-    from .drift import DriftReport, _detect_format_drift
+    from .drift import UnparsedDates, _date_ops, unparsed_dates
 
     seen: dict[str, set[str]] = {}
     rows = 0
-    fmt = DriftReport()
+    date_ops = list(_date_ops(recipe)) if formats else []
+    unparsed: dict[str, UnparsedDates] = {}
     _check_row_widths(in_path, kwargs)
     scan_kwargs = {k: v for k, v in kwargs.items() if k != "dtype"}
     if kwargs.get("dtype") is str:  # text=True reads everything as text
@@ -241,17 +243,17 @@ def _scan(recipe: Recipe, in_path: Path, chunksize: int, kwargs: dict, *, format
         rows += len(chunk)
         for col in chunk.columns:
             seen.setdefault(str(col), set()).add(str(chunk[col].dtype))
-        if formats:
-            _detect_format_drift(chunk, recipe, fmt)
+        for src, op in date_ops:
+            if src in chunk.columns:
+                unparsed.setdefault(str(src), UnparsedDates()).add(unparsed_dates(chunk[src], op))
     dtypes = {col: _merge_dtype(col, names) for col, names in seen.items()}
-    return _Scan(dtypes=dtypes, rows=rows, format_findings=fmt.findings)
+    return _Scan(dtypes=dtypes, rows=rows, unparsed=unparsed)
 
 
 def _whole_file_drift(head_report: Any, scan: _Scan, recipe: Recipe, source: str) -> Any:
     """Head-sample drift, with dtype / row-count / format findings widened to every row."""
     from ._util import canonicalize_dtype
-    from .drift import DriftFinding, DriftReport
-    from .llm import _sketch
+    from .drift import DriftFinding, DriftReport, _learned_shapes, format_drift_finding
     from .types import Severity
 
     widened = {"dtype_change", "format_drift", "row_count_change"}
@@ -274,26 +276,10 @@ def _whole_file_drift(head_report: Any, scan: _Scan, recipe: Recipe, source: str
                 evidence={"was": was, "now": now},
             )
         )
-    by_col: dict[str, list[DriftFinding]] = {}
-    for f in scan.format_findings:
-        by_col.setdefault(str(f.column), []).append(f)
-    for col, group in by_col.items():
-        examples = [e for f in group for e in f.evidence.get("examples", [])][:3]
-        sketches = sorted({_sketch(e) for e in examples})
-        count = sum(int(f.evidence.get("count", 0)) for f in group)
-        report.findings.append(
-            DriftFinding(
-                kind="format_drift",
-                message=(
-                    f'{count} value(s) in "{col}" match no allowed date format '
-                    f"(new: {examples[0]!r})"
-                ),
-                severity=Severity.WARNING,
-                column=col,
-                suggestion=f"New pattern {sketches[0]!r}; add its format to the recipe.",
-                evidence={"count": count, "examples": examples, "sketches": sketches},
-            )
-        )
+    for col, seen in scan.unparsed.items():
+        finding = format_drift_finding(col, seen, _learned_shapes(recipe, col))
+        if finding is not None:
+            report.findings.append(finding)
     expected_rows = fp.get("row_count")
     try:
         if expected_rows is not None and int(expected_rows) != scan.rows:
@@ -350,6 +336,8 @@ class StreamSummary:
     rows_quarantined: int = 0
     chunks: int = 0
     quarantine_path: Path | None = None
+    #: Per source column: values an op could not parse and turned into missing values.
+    parse_losses: dict[str, int] = field(default_factory=dict)
 
     def render(self) -> str:
         base = (
@@ -359,6 +347,8 @@ class StreamSummary:
         if self.rows_quarantined:
             where = f" → {self.quarantine_path}" if self.quarantine_path else " (not saved)"
             base += f" {self.rows_quarantined:,} quarantined{where}."
+        if self.parse_losses:
+            base += f" {sum(self.parse_losses.values()):,} value(s) could not be parsed."
         return base
 
 
@@ -468,6 +458,8 @@ def stream_apply(
     q_written = False
     first = True
     tmp_out = Path(str(out_path) + ".cf-tmp")
+    #: Each chunk raises the same warnings; they are shown once, after the last chunk.
+    chunk_warnings: dict[tuple[type, str], None] = {}
 
     try:
         reader = pd.read_csv(in_path, chunksize=chunksize, **read_kwargs)
@@ -479,9 +471,16 @@ def stream_apply(
             # max_diff_changes=0: count every change but store none (streaming keeps counts,
             # not a full in-memory lineage — the invariant-5 cap, applied globally). The
             # per-chunk "diff truncated" warning is expected here, so silence just that one.
-            with warnings.catch_warnings():
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
                 warnings.filterwarnings("ignore", message="CleanFrame: diff detail truncated")
+                # Counted across chunks and reported once for the whole file below.
+                warnings.filterwarnings("ignore", message="CleanFrame: values became missing")
                 result = execute(recipe, chunk, mode=mode, max_diff_changes=0)
+            for w in caught:
+                chunk_warnings.setdefault((w.category, str(w.message)), None)
+            for col, n in result.parse_losses.items():
+                summary.parse_losses[col] = summary.parse_losses.get(col, 0) + n
             cleaned = sanitize_dataframe_for_csv(result.dataframe)
             cleaned.to_csv(
                 tmp_out, mode="w" if first else "a", header=first, index=False,
@@ -528,6 +527,15 @@ def stream_apply(
         raise
 
     summary.quarantine_path = q_path if q_written else None
+    for category, message in chunk_warnings:
+        warnings.warn(message, category, stacklevel=2)
+    if summary.parse_losses:
+        detail = ", ".join(f"{col} ({n:,})" for col, n in sorted(summary.parse_losses.items()))
+        warnings.warn(
+            f"CleanFrame: values became missing because an op could not parse them: {detail}",
+            CleanFrameWarning,
+            stacklevel=2,
+        )
     if summary.rows_quarantined and q_path is None:
         warnings.warn(
             f"CleanFrame: {summary.rows_quarantined:,} row(s) quarantined by validation "

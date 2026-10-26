@@ -6,8 +6,9 @@
 |------|-------|----------|---------------|-------|
 | `schema_mapping` | frame | 5 | Renames | Requires target schema |
 | `unicode` | column | 8 | `normalize_unicode` | Zero-width characters / BOMs, non-breaking spaces, decomposed accents (`cafe` + U+0301 vs `café`) |
+| `excel_text` | column | 9 | `replace` | Unwraps Excel's `="00123"` text formulas (how exports keep leading zeros) when most of a column uses them |
 | `whitespace` | column | 10 | Yes | Strip / collapse |
-| `nulls` | column | 20 | `to_na` for disguised nulls | Real nulls reported only |
+| `nulls` | column | 20 | `to_na` for disguised nulls | Real nulls reported only. Excel error values (`#DIV/0!`, `#REF!`, `#VALUE!`, `#NAME?`, `#NUM!`, `#NULL!`, `#N/A`, …) are formulas that failed in the source workbook and become missing too |
 | `dates` | column | 40 | `parse_date` | Mixed formats → ISO |
 | `emails` | column | 45 | `normalize_email` | |
 | `phones` | column | 45 | `normalize_phone` | |
